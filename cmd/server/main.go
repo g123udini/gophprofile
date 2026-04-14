@@ -17,6 +17,7 @@ import (
 
 	"gophprofile/internal/config"
 	"gophprofile/internal/repository/postgres"
+	"gophprofile/internal/repository/s3"
 	"gophprofile/migrations"
 )
 
@@ -46,13 +47,27 @@ func main() {
 	defer pool.Close()
 	logger.Info("postgres pool ready")
 
+	s3Client, err := s3.NewClient(cfg.S3)
+	if err != nil {
+		logger.Error("failed to init s3 client", "err", err)
+		os.Exit(1)
+	}
+	s3Ctx, s3Cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	if err := s3Client.EnsureBucket(s3Ctx); err != nil {
+		s3Cancel()
+		logger.Error("failed to ensure s3 bucket", "err", err, "bucket", cfg.S3.Bucket)
+		os.Exit(1)
+	}
+	s3Cancel()
+	logger.Info("s3 bucket ready", "bucket", cfg.S3.Bucket)
+
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
 	r.Use(middleware.RealIP)
 	r.Use(middleware.Recoverer)
 	r.Use(middleware.Timeout(30 * time.Second))
 
-	r.Get("/health", healthHandler(pool))
+	r.Get("/health", healthHandler(pool, s3Client))
 
 	fs := http.FileServer(http.Dir("web/static"))
 	r.Handle("/*", fs)
@@ -87,25 +102,35 @@ func main() {
 	logger.Info("server stopped")
 }
 
-func healthHandler(pool *pgxpool.Pool) http.HandlerFunc {
+func healthHandler(pool *pgxpool.Pool, s3Client *s3.Client) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		pgStatus := "ok"
-		statusCode := http.StatusOK
-
 		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 		defer cancel()
+
+		pgStatus := "ok"
 		if err := pool.Ping(ctx); err != nil {
 			pgStatus = "down"
+		}
+
+		s3Status := "ok"
+		if err := s3Client.Ping(ctx); err != nil {
+			s3Status = "down"
+		}
+
+		overall := "ok"
+		statusCode := http.StatusOK
+		if pgStatus != "ok" || s3Status != "ok" {
+			overall = "degraded"
 			statusCode = http.StatusServiceUnavailable
 		}
 
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(statusCode)
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"status": map[bool]string{true: "ok", false: "degraded"}[statusCode == http.StatusOK],
+			"status": overall,
 			"components": map[string]string{
 				"postgres": pgStatus,
-				"s3":       "unknown",
+				"s3":       s3Status,
 				"rabbit":   "unknown",
 			},
 		})
