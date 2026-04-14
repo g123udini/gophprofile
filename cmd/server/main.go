@@ -16,7 +16,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"gophprofile/internal/config"
-	"gophprofile/internal/storage/postgres"
+	"gophprofile/internal/repository/postgres"
 	"gophprofile/migrations"
 )
 
