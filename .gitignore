@@ -1,0 +1,33 @@
+# Go
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+/bin/
+/dist/
+coverage.out
+coverage.html
+vendor/
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+
+# JetBrains
+.idea/
+*.iml
+
+# VS Code
+.vscode/
+
+
+# macOS
+.DS_Store
+
+# Logs / tmp
+*.log
+tmp/
