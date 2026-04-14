@@ -118,6 +118,72 @@ func TestPublisher_Healthy_ReportsOpenConnection(t *testing.T) {
 	require.True(t, p.Healthy())
 }
 
+func TestConsumer_Run_DeliversToHandlerAndAcks(t *testing.T) {
+	c, err := rabbitmq.NewConsumer(testAmqpURL, testExchange, "test-consumer-happy", events.RoutingKeyAvatarUploaded)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = c.Close() })
+
+	received := make(chan events.AvatarUploadedEvent, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- c.Run(ctx, func(_ context.Context, evt events.AvatarUploadedEvent) error {
+			received <- evt
+			return nil
+		})
+	}()
+
+	p := newPublisher(t)
+	require.NoError(t, p.PublishAvatarUploaded(context.Background(), events.AvatarUploadedEvent{
+		AvatarID: "consumer-test", UserID: "u", S3Key: "k",
+	}))
+
+	select {
+	case evt := <-received:
+		require.Equal(t, "consumer-test", evt.AvatarID)
+	case <-time.After(3 * time.Second):
+		t.Fatal("handler not called within 3s")
+	}
+
+	cancel()
+	<-done
+	require.True(t, c.Healthy(), "connection must still be healthy after ctx cancel")
+}
+
+func TestConsumer_Run_HandlerErrorNacksMessage(t *testing.T) {
+	c, err := rabbitmq.NewConsumer(testAmqpURL, testExchange, "test-consumer-error", events.RoutingKeyAvatarUploaded)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = c.Close() })
+
+	attempts := make(chan struct{}, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		_ = c.Run(ctx, func(_ context.Context, _ events.AvatarUploadedEvent) error {
+			attempts <- struct{}{}
+			return errTest
+		})
+	}()
+
+	p := newPublisher(t)
+	require.NoError(t, p.PublishAvatarUploaded(context.Background(), events.AvatarUploadedEvent{
+		AvatarID: "err", UserID: "u", S3Key: "k",
+	}))
+
+	select {
+	case <-attempts:
+	case <-time.After(3 * time.Second):
+		t.Fatal("handler was never invoked")
+	}
+
+	cancel()
+}
+
+var errTest = errorString("handler failed")
+
+type errorString string
+
+func (e errorString) Error() string { return string(e) }
+
 func TestPublisher_DropsMessagesWhenRoutingKeyDoesNotMatchAnyBinding(t *testing.T) {
 	// Queue bound to "avatar.uploaded" but publisher currently only emits that
 	// routing key. This test asserts topic-routing semantics: publishing the

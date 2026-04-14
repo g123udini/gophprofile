@@ -222,6 +222,92 @@ func TestAvatarService_Upload_UsesFallbackExtensionForUnknownFileName(t *testing
 	require.True(t, strings.HasSuffix(a.S3Key, ".jpg"), "got %q", a.S3Key)
 }
 
+func TestAvatarService_Get_DelegatesToRepo(t *testing.T) {
+	want := &domain.Avatar{ID: uuid.New(), UserID: "u1"}
+	repo := &fakeRepo{getFn: func(ctx context.Context, _ uuid.UUID) (*domain.Avatar, error) {
+		return want, nil
+	}}
+	svc := NewAvatarService(repo, &fakeStorage{}, &fakePublisher{})
+
+	got, err := svc.Get(context.Background(), want.ID)
+	require.NoError(t, err)
+	require.Same(t, want, got)
+}
+
+func TestAvatarService_GetLatestForUser_ReturnsFirst(t *testing.T) {
+	a := &domain.Avatar{ID: uuid.New(), UserID: "u1", FileName: "new.jpg"}
+	b := &domain.Avatar{ID: uuid.New(), UserID: "u1", FileName: "old.jpg"}
+	repo := &fakeRepo{listFn: func(ctx context.Context, _ string) ([]*domain.Avatar, error) {
+		return []*domain.Avatar{a, b}, nil
+	}}
+	svc := NewAvatarService(repo, &fakeStorage{}, &fakePublisher{})
+
+	got, err := svc.GetLatestForUser(context.Background(), "u1")
+	require.NoError(t, err)
+	require.Same(t, a, got)
+}
+
+func TestAvatarService_GetLatestForUser_Empty(t *testing.T) {
+	repo := &fakeRepo{listFn: func(ctx context.Context, _ string) ([]*domain.Avatar, error) {
+		return nil, nil
+	}}
+	svc := NewAvatarService(repo, &fakeStorage{}, &fakePublisher{})
+
+	_, err := svc.GetLatestForUser(context.Background(), "u1")
+	require.ErrorIs(t, err, domain.ErrAvatarNotFound)
+}
+
+func TestAvatarService_OpenContent_Original(t *testing.T) {
+	avatar := &domain.Avatar{
+		ID: uuid.New(), UserID: "u1", S3Key: "k", MimeType: "image/png",
+	}
+	body := []byte("data")
+	repo := &fakeRepo{getFn: func(ctx context.Context, _ uuid.UUID) (*domain.Avatar, error) {
+		return avatar, nil
+	}}
+	storage := &fakeStorage{getFn: func(ctx context.Context, key string) (io.ReadCloser, int64, string, error) {
+		require.Equal(t, "k", key)
+		return io.NopCloser(bytes.NewReader(body)), int64(len(body)), "image/jpeg", nil
+	}}
+	svc := NewAvatarService(repo, storage, &fakePublisher{})
+
+	rc, sz, ct, err := svc.OpenContent(context.Background(), avatar.ID, "")
+	require.NoError(t, err)
+	defer rc.Close()
+	require.Equal(t, int64(4), sz)
+	require.Equal(t, "image/png", ct)
+}
+
+func TestAvatarService_OpenContent_Thumbnail(t *testing.T) {
+	avatar := &domain.Avatar{
+		ID: uuid.New(), UserID: "u1", S3Key: "orig",
+		ThumbnailS3Keys: map[string]string{"100x100": "thumbs/100"},
+	}
+	repo := &fakeRepo{getFn: func(ctx context.Context, _ uuid.UUID) (*domain.Avatar, error) {
+		return avatar, nil
+	}}
+	storage := &fakeStorage{getFn: func(ctx context.Context, key string) (io.ReadCloser, int64, string, error) {
+		require.Equal(t, "thumbs/100", key)
+		return io.NopCloser(bytes.NewReader([]byte("t"))), 1, "", nil
+	}}
+	svc := NewAvatarService(repo, storage, &fakePublisher{})
+
+	rc, _, ct, err := svc.OpenContent(context.Background(), avatar.ID, "100x100")
+	require.NoError(t, err)
+	defer rc.Close()
+	require.Equal(t, "image/jpeg", ct, "thumbnail content type must be jpeg")
+}
+
+func TestAvatarService_OpenContent_UnknownSize(t *testing.T) {
+	repo := &fakeRepo{getFn: func(ctx context.Context, _ uuid.UUID) (*domain.Avatar, error) {
+		return &domain.Avatar{ID: uuid.New()}, nil
+	}}
+	svc := NewAvatarService(repo, &fakeStorage{}, &fakePublisher{})
+
+	_, _, _, err := svc.OpenContent(context.Background(), uuid.New(), "500x500")
+	require.ErrorIs(t, err, ErrUnknownSize)
+}
+
 func TestAvatarService_Delete_RequiresOwnership(t *testing.T) {
 	owner := "owner"
 	other := "intruder"
