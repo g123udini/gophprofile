@@ -15,6 +15,7 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"gophprofile/internal/broker/rabbitmq"
 	"gophprofile/internal/config"
 	"gophprofile/internal/handlers"
 	"gophprofile/internal/repository/postgres"
@@ -63,8 +64,16 @@ func main() {
 	s3Cancel()
 	logger.Info("s3 bucket ready", "bucket", cfg.S3.Bucket)
 
+	publisher, err := rabbitmq.NewPublisher(cfg.Rabbit.URL, cfg.Rabbit.Exchange)
+	if err != nil {
+		logger.Error("failed to init rabbitmq publisher", "err", err)
+		os.Exit(1)
+	}
+	defer publisher.Close()
+	logger.Info("rabbitmq publisher ready", "exchange", cfg.Rabbit.Exchange)
+
 	avatarRepo := postgres.NewAvatarRepository(pool)
-	avatarSvc := service.NewAvatarService(avatarRepo, s3Client)
+	avatarSvc := service.NewAvatarService(avatarRepo, s3Client, publisher)
 	avatarHandler := handlers.NewAvatarHandler(avatarSvc)
 
 	r := chi.NewRouter()
@@ -73,7 +82,7 @@ func main() {
 	r.Use(middleware.Recoverer)
 	r.Use(middleware.Timeout(30 * time.Second))
 
-	r.Get("/health", healthHandler(pool, s3Client))
+	r.Get("/health", healthHandler(pool, s3Client, publisher))
 	r.Post("/api/v1/avatars", avatarHandler.Upload)
 
 	fs := http.FileServer(http.Dir("web/static"))
@@ -109,7 +118,7 @@ func main() {
 	logger.Info("server stopped")
 }
 
-func healthHandler(pool *pgxpool.Pool, s3Client *s3.Client) http.HandlerFunc {
+func healthHandler(pool *pgxpool.Pool, s3Client *s3.Client, publisher *rabbitmq.Publisher) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 		defer cancel()
@@ -124,9 +133,14 @@ func healthHandler(pool *pgxpool.Pool, s3Client *s3.Client) http.HandlerFunc {
 			s3Status = "down"
 		}
 
+		rabbitStatus := "ok"
+		if !publisher.Healthy() {
+			rabbitStatus = "down"
+		}
+
 		overall := "ok"
 		statusCode := http.StatusOK
-		if pgStatus != "ok" || s3Status != "ok" {
+		if pgStatus != "ok" || s3Status != "ok" || rabbitStatus != "ok" {
 			overall = "degraded"
 			statusCode = http.StatusServiceUnavailable
 		}
@@ -138,7 +152,7 @@ func healthHandler(pool *pgxpool.Pool, s3Client *s3.Client) http.HandlerFunc {
 			"components": map[string]string{
 				"postgres": pgStatus,
 				"s3":       s3Status,
-				"rabbit":   "unknown",
+				"rabbit":   rabbitStatus,
 			},
 		})
 	}

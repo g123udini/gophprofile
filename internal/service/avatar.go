@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 
 	"gophprofile/internal/domain"
+	"gophprofile/internal/events"
 )
 
 var (
@@ -34,13 +35,18 @@ type avatarStorage interface {
 	DeleteObject(ctx context.Context, key string) error
 }
 
-type AvatarService struct {
-	repo    avatarRepo
-	storage avatarStorage
+type eventPublisher interface {
+	PublishAvatarUploaded(ctx context.Context, evt events.AvatarUploadedEvent) error
 }
 
-func NewAvatarService(repo avatarRepo, storage avatarStorage) *AvatarService {
-	return &AvatarService{repo: repo, storage: storage}
+type AvatarService struct {
+	repo      avatarRepo
+	storage   avatarStorage
+	publisher eventPublisher
+}
+
+func NewAvatarService(repo avatarRepo, storage avatarStorage, publisher eventPublisher) *AvatarService {
+	return &AvatarService{repo: repo, storage: storage, publisher: publisher}
 }
 
 type UploadInput struct {
@@ -84,6 +90,18 @@ func (s *AvatarService) Upload(ctx context.Context, in UploadInput) (*domain.Ava
 				"key", key, "err", delErr, "original_err", err)
 		}
 		return nil, fmt.Errorf("upload: create avatar: %w", err)
+	}
+
+	// Broker failures leave the avatar in processing_status=pending forever.
+	// Acceptable for the sprint-01 MVP; a proper fix is the outbox pattern
+	// in sprint-03.
+	if err := s.publisher.PublishAvatarUploaded(ctx, events.AvatarUploadedEvent{
+		AvatarID: avatar.ID.String(),
+		UserID:   avatar.UserID,
+		S3Key:    avatar.S3Key,
+	}); err != nil {
+		slog.Warn("publish avatar.uploaded failed; avatar will stay pending",
+			"err", err, "avatar_id", avatar.ID)
 	}
 
 	return avatar, nil
