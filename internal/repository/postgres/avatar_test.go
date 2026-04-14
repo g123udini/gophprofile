@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/require"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
@@ -197,6 +198,22 @@ func TestAvatarRepository_SoftDelete_SecondCallReturnsNotFound(t *testing.T) {
 	require.NoError(t, repo.Create(ctx, a))
 	require.NoError(t, repo.SoftDelete(ctx, a.ID))
 	require.ErrorIs(t, repo.SoftDelete(ctx, a.ID), domain.ErrAvatarNotFound)
+}
+
+func TestAvatarRepository_Create_AcceptsExternalID(t *testing.T) {
+	truncate(t)
+	ctx := context.Background()
+	repo := postgres.NewAvatarRepository(testPool)
+
+	wantID := uuid.New()
+	a := newAvatar("u1")
+	a.ID = wantID
+	require.NoError(t, repo.Create(ctx, a))
+	require.Equal(t, wantID, a.ID)
+
+	got, err := repo.GetByID(ctx, wantID)
+	require.NoError(t, err)
+	require.Equal(t, wantID, got.ID)
 }
 
 func TestAvatarRepository_UpdateProcessing_NotFound(t *testing.T) {

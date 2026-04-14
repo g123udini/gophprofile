@@ -16,8 +16,10 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"gophprofile/internal/config"
+	"gophprofile/internal/handlers"
 	"gophprofile/internal/repository/postgres"
 	"gophprofile/internal/repository/s3"
+	"gophprofile/internal/service"
 	"gophprofile/migrations"
 )
 
@@ -61,6 +63,10 @@ func main() {
 	s3Cancel()
 	logger.Info("s3 bucket ready", "bucket", cfg.S3.Bucket)
 
+	avatarRepo := postgres.NewAvatarRepository(pool)
+	avatarSvc := service.NewAvatarService(avatarRepo, s3Client)
+	avatarHandler := handlers.NewAvatarHandler(avatarSvc)
+
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
 	r.Use(middleware.RealIP)
@@ -68,6 +74,7 @@ func main() {
 	r.Use(middleware.Timeout(30 * time.Second))
 
 	r.Get("/health", healthHandler(pool, s3Client))
+	r.Post("/api/v1/avatars", avatarHandler.Upload)
 
 	fs := http.FileServer(http.Dir("web/static"))
 	r.Handle("/*", fs)

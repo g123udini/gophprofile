@@ -25,14 +25,29 @@ const avatarColumns = `id, user_id, file_name, mime_type, size_bytes, s3_key, th
        upload_status, processing_status, created_at, updated_at`
 
 func (r *AvatarRepository) Create(ctx context.Context, a *domain.Avatar) error {
-	const q = `
+	if a.ID == uuid.Nil {
+		const q = `
 INSERT INTO avatars (user_id, file_name, mime_type, size_bytes, s3_key, upload_status, processing_status)
 VALUES ($1, $2, $3, $4, $5, $6, $7)
 RETURNING id, created_at, updated_at`
+		err := r.pool.QueryRow(ctx, q,
+			a.UserID, a.FileName, a.MimeType, a.SizeBytes, a.S3Key,
+			a.UploadStatus, a.ProcessingStatus,
+		).Scan(&a.ID, &a.CreatedAt, &a.UpdatedAt)
+		if err != nil {
+			return fmt.Errorf("create avatar: %w", err)
+		}
+		return nil
+	}
+
+	const q = `
+INSERT INTO avatars (id, user_id, file_name, mime_type, size_bytes, s3_key, upload_status, processing_status)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+RETURNING created_at, updated_at`
 	err := r.pool.QueryRow(ctx, q,
-		a.UserID, a.FileName, a.MimeType, a.SizeBytes, a.S3Key,
+		a.ID, a.UserID, a.FileName, a.MimeType, a.SizeBytes, a.S3Key,
 		a.UploadStatus, a.ProcessingStatus,
-	).Scan(&a.ID, &a.CreatedAt, &a.UpdatedAt)
+	).Scan(&a.CreatedAt, &a.UpdatedAt)
 	if err != nil {
 		return fmt.Errorf("create avatar: %w", err)
 	}
