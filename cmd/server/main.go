@@ -13,8 +13,11 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"gophprofile/internal/config"
+	"gophprofile/internal/storage/postgres"
+	"gophprofile/migrations"
 )
 
 func main() {
@@ -27,13 +30,29 @@ func main() {
 		os.Exit(1)
 	}
 
+	if err := postgres.Migrate(cfg.Postgres.DSN, migrations.FS); err != nil {
+		logger.Error("failed to apply migrations", "err", err)
+		os.Exit(1)
+	}
+	logger.Info("migrations applied")
+
+	poolCtx, poolCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	pool, err := postgres.NewPool(poolCtx, cfg.Postgres.DSN)
+	poolCancel()
+	if err != nil {
+		logger.Error("failed to connect to postgres", "err", err)
+		os.Exit(1)
+	}
+	defer pool.Close()
+	logger.Info("postgres pool ready")
+
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
 	r.Use(middleware.RealIP)
 	r.Use(middleware.Recoverer)
 	r.Use(middleware.Timeout(30 * time.Second))
 
-	r.Get("/health", healthHandler)
+	r.Get("/health", healthHandler(pool))
 
 	fs := http.FileServer(http.Dir("web/static"))
 	r.Handle("/*", fs)
@@ -68,15 +87,27 @@ func main() {
 	logger.Info("server stopped")
 }
 
-func healthHandler(w http.ResponseWriter, _ *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(map[string]any{
-		"status": "ok",
-		"components": map[string]string{
-			"postgres": "unknown",
-			"s3":       "unknown",
-			"rabbit":   "unknown",
-		},
-	})
+func healthHandler(pool *pgxpool.Pool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		pgStatus := "ok"
+		statusCode := http.StatusOK
+
+		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+		defer cancel()
+		if err := pool.Ping(ctx); err != nil {
+			pgStatus = "down"
+			statusCode = http.StatusServiceUnavailable
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(statusCode)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"status": map[bool]string{true: "ok", false: "degraded"}[statusCode == http.StatusOK],
+			"components": map[string]string{
+				"postgres": pgStatus,
+				"s3":       "unknown",
+				"rabbit":   "unknown",
+			},
+		})
+	}
 }
