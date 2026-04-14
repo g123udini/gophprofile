@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 
@@ -22,10 +23,16 @@ import (
 )
 
 type fakeUploader struct {
-	avatar *domain.Avatar
-	err    error
-	calls  int
-	lastIn service.UploadInput
+	avatar      *domain.Avatar
+	err         error
+	calls       int
+	lastIn      service.UploadInput
+	getFn       func(ctx context.Context, id uuid.UUID) (*domain.Avatar, error)
+	listFn      func(ctx context.Context, userID string) ([]*domain.Avatar, error)
+	latestFn    func(ctx context.Context, userID string) (*domain.Avatar, error)
+	openFn      func(ctx context.Context, id uuid.UUID, size string) (io.ReadCloser, int64, string, error)
+	deleteFn    func(ctx context.Context, id uuid.UUID, actingUserID string) error
+	deleteCalls int
 }
 
 func (f *fakeUploader) Upload(ctx context.Context, in service.UploadInput) (*domain.Avatar, error) {
@@ -48,6 +55,42 @@ func (f *fakeUploader) Upload(ctx context.Context, in service.UploadInput) (*dom
 		ProcessingStatus: domain.ProcessingStatusPending,
 		CreatedAt:        time.Now().UTC(),
 	}, nil
+}
+
+func (f *fakeUploader) Get(ctx context.Context, id uuid.UUID) (*domain.Avatar, error) {
+	if f.getFn != nil {
+		return f.getFn(ctx, id)
+	}
+	return nil, domain.ErrAvatarNotFound
+}
+
+func (f *fakeUploader) ListForUser(ctx context.Context, userID string) ([]*domain.Avatar, error) {
+	if f.listFn != nil {
+		return f.listFn(ctx, userID)
+	}
+	return nil, nil
+}
+
+func (f *fakeUploader) GetLatestForUser(ctx context.Context, userID string) (*domain.Avatar, error) {
+	if f.latestFn != nil {
+		return f.latestFn(ctx, userID)
+	}
+	return nil, domain.ErrAvatarNotFound
+}
+
+func (f *fakeUploader) OpenContent(ctx context.Context, id uuid.UUID, size string) (io.ReadCloser, int64, string, error) {
+	if f.openFn != nil {
+		return f.openFn(ctx, id, size)
+	}
+	return nil, 0, "", domain.ErrAvatarNotFound
+}
+
+func (f *fakeUploader) Delete(ctx context.Context, id uuid.UUID, actingUserID string) error {
+	f.deleteCalls++
+	if f.deleteFn != nil {
+		return f.deleteFn(ctx, id, actingUserID)
+	}
+	return nil
 }
 
 func buildMultipart(t *testing.T, fieldName, filename, contentType string, body []byte) (*bytes.Buffer, string) {
@@ -187,8 +230,152 @@ func TestAvatarHandler_Upload_PassesFullBodyToService(t *testing.T) {
 	require.Equal(t, payload, drain.body)
 }
 
+// -----------------------------------------------------------------
+// Tests for the remaining read/delete endpoints.
+
+func newRouter(h *handlers.AvatarHandler) http.Handler {
+	r := chi.NewRouter()
+	r.Get("/api/v1/avatars/{id}", h.GetByID)
+	r.Get("/api/v1/avatars/{id}/metadata", h.GetMetadata)
+	r.Delete("/api/v1/avatars/{id}", h.Delete)
+	r.Get("/api/v1/users/{user_id}/avatar", h.GetUserLatest)
+	r.Get("/api/v1/users/{user_id}/avatars", h.ListUserAvatars)
+	return r
+}
+
+func TestAvatarHandler_GetByID_StreamsOriginal(t *testing.T) {
+	id := uuid.New()
+	body := []byte("image-bytes")
+	fake := &fakeUploader{
+		openFn: func(ctx context.Context, gotID uuid.UUID, size string) (io.ReadCloser, int64, string, error) {
+			require.Equal(t, id, gotID)
+			require.Equal(t, "", size)
+			return io.NopCloser(bytes.NewReader(body)), int64(len(body)), "image/jpeg", nil
+		},
+	}
+	h := handlers.NewAvatarHandler(fake)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/avatars/"+id.String(), nil)
+	rec := httptest.NewRecorder()
+	newRouter(h).ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, "image/jpeg", rec.Header().Get("Content-Type"))
+	require.Equal(t, body, rec.Body.Bytes())
+}
+
+func TestAvatarHandler_GetByID_NotFound(t *testing.T) {
+	id := uuid.New()
+	fake := &fakeUploader{
+		openFn: func(ctx context.Context, _ uuid.UUID, _ string) (io.ReadCloser, int64, string, error) {
+			return nil, 0, "", domain.ErrAvatarNotFound
+		},
+	}
+	h := handlers.NewAvatarHandler(fake)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/avatars/"+id.String(), nil)
+	rec := httptest.NewRecorder()
+	newRouter(h).ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+func TestAvatarHandler_GetMetadata_ReturnsJSON(t *testing.T) {
+	id := uuid.New()
+	fake := &fakeUploader{
+		getFn: func(ctx context.Context, _ uuid.UUID) (*domain.Avatar, error) {
+			return &domain.Avatar{
+				ID: id, UserID: "u", FileName: "me.jpg", MimeType: "image/jpeg",
+				SizeBytes: 42, S3Key: "k", UploadStatus: "uploaded", ProcessingStatus: "completed",
+				CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+				ThumbnailS3Keys: map[string]string{"100x100": "thumb-100"},
+			}, nil
+		},
+	}
+	h := handlers.NewAvatarHandler(fake)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/avatars/"+id.String()+"/metadata", nil)
+	rec := httptest.NewRecorder()
+	newRouter(h).ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	var resp map[string]any
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&resp))
+	require.Equal(t, id.String(), resp["id"])
+	require.Equal(t, "completed", resp["processing_status"])
+	thumbs := resp["thumbnails"].(map[string]any)
+	require.Equal(t, "thumb-100", thumbs["100x100"])
+}
+
+func TestAvatarHandler_ListUserAvatars_ReturnsArray(t *testing.T) {
+	fake := &fakeUploader{
+		listFn: func(ctx context.Context, userID string) ([]*domain.Avatar, error) {
+			require.Equal(t, "u1", userID)
+			return []*domain.Avatar{
+				{ID: uuid.New(), UserID: "u1", FileName: "a.jpg"},
+				{ID: uuid.New(), UserID: "u1", FileName: "b.jpg"},
+			}, nil
+		},
+	}
+	h := handlers.NewAvatarHandler(fake)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/users/u1/avatars", nil)
+	rec := httptest.NewRecorder()
+	newRouter(h).ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	var list []map[string]any
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&list))
+	require.Len(t, list, 2)
+}
+
+func TestAvatarHandler_Delete_NoUserID(t *testing.T) {
+	id := uuid.New()
+	fake := &fakeUploader{}
+	h := handlers.NewAvatarHandler(fake)
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/avatars/"+id.String(), nil)
+	rec := httptest.NewRecorder()
+	newRouter(h).ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	require.Equal(t, 0, fake.deleteCalls)
+}
+
+func TestAvatarHandler_Delete_Forbidden(t *testing.T) {
+	id := uuid.New()
+	fake := &fakeUploader{
+		deleteFn: func(ctx context.Context, _ uuid.UUID, _ string) error {
+			return service.ErrForbidden
+		},
+	}
+	h := handlers.NewAvatarHandler(fake)
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/avatars/"+id.String(), nil)
+	req.Header.Set("X-User-ID", "intruder")
+	rec := httptest.NewRecorder()
+	newRouter(h).ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusForbidden, rec.Code)
+}
+
+func TestAvatarHandler_Delete_Success(t *testing.T) {
+	id := uuid.New()
+	fake := &fakeUploader{}
+	h := handlers.NewAvatarHandler(fake)
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/avatars/"+id.String(), nil)
+	req.Header.Set("X-User-ID", "owner")
+	rec := httptest.NewRecorder()
+	newRouter(h).ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusNoContent, rec.Code)
+	require.Equal(t, 1, fake.deleteCalls)
+}
+
 type drainingUploader struct {
 	body []byte
+	fakeUploader
 }
 
 func (d *drainingUploader) Upload(ctx context.Context, in service.UploadInput) (*domain.Avatar, error) {

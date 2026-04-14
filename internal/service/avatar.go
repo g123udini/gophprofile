@@ -18,6 +18,14 @@ import (
 var (
 	ErrInvalidContentType = errors.New("invalid content type")
 	ErrEmptyUserID        = errors.New("empty user id")
+	ErrForbidden          = errors.New("forbidden")
+	ErrUnknownSize        = errors.New("unknown size")
+)
+
+const (
+	SizeOriginal = "original"
+	Size100x100  = "100x100"
+	Size300x300  = "300x300"
 )
 
 var allowedContentTypes = map[string]string{
@@ -28,10 +36,14 @@ var allowedContentTypes = map[string]string{
 
 type avatarRepo interface {
 	Create(ctx context.Context, a *domain.Avatar) error
+	GetByID(ctx context.Context, id uuid.UUID) (*domain.Avatar, error)
+	ListByUserID(ctx context.Context, userID string) ([]*domain.Avatar, error)
+	SoftDelete(ctx context.Context, id uuid.UUID) error
 }
 
 type avatarStorage interface {
 	PutObject(ctx context.Context, key, contentType string, r io.Reader, size int64) error
+	GetObject(ctx context.Context, key string) (io.ReadCloser, int64, string, error)
 	DeleteObject(ctx context.Context, key string) error
 }
 
@@ -105,6 +117,94 @@ func (s *AvatarService) Upload(ctx context.Context, in UploadInput) (*domain.Ava
 	}
 
 	return avatar, nil
+}
+
+func (s *AvatarService) Get(ctx context.Context, id uuid.UUID) (*domain.Avatar, error) {
+	return s.repo.GetByID(ctx, id)
+}
+
+func (s *AvatarService) ListForUser(ctx context.Context, userID string) ([]*domain.Avatar, error) {
+	return s.repo.ListByUserID(ctx, userID)
+}
+
+func (s *AvatarService) GetLatestForUser(ctx context.Context, userID string) (*domain.Avatar, error) {
+	list, err := s.repo.ListByUserID(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	if len(list) == 0 {
+		return nil, domain.ErrAvatarNotFound
+	}
+	return list[0], nil
+}
+
+// OpenContent returns a stream for the avatar's original or thumbnail. The
+// caller must close the returned reader. size must be one of "original",
+// "100x100", "300x300".
+func (s *AvatarService) OpenContent(ctx context.Context, id uuid.UUID, size string) (io.ReadCloser, int64, string, error) {
+	avatar, err := s.repo.GetByID(ctx, id)
+	if err != nil {
+		return nil, 0, "", err
+	}
+
+	key, contentType, err := resolveKey(avatar, size)
+	if err != nil {
+		return nil, 0, "", err
+	}
+
+	rc, sz, _, err := s.storage.GetObject(ctx, key)
+	if err != nil {
+		return nil, 0, "", err
+	}
+	return rc, sz, contentType, nil
+}
+
+func resolveKey(a *domain.Avatar, size string) (key, contentType string, err error) {
+	switch size {
+	case "", SizeOriginal:
+		return a.S3Key, a.MimeType, nil
+	case Size100x100, Size300x300:
+		if a.ThumbnailS3Keys == nil {
+			return "", "", domain.ErrAvatarNotFound
+		}
+		k, ok := a.ThumbnailS3Keys[size]
+		if !ok {
+			return "", "", domain.ErrAvatarNotFound
+		}
+		return k, "image/jpeg", nil
+	default:
+		return "", "", ErrUnknownSize
+	}
+}
+
+// Delete soft-deletes the avatar and removes its S3 objects synchronously.
+// Async deletion via RabbitMQ is a sprint-03 follow-up.
+func (s *AvatarService) Delete(ctx context.Context, id uuid.UUID, actingUserID string) error {
+	if actingUserID == "" {
+		return ErrEmptyUserID
+	}
+	avatar, err := s.repo.GetByID(ctx, id)
+	if err != nil {
+		return err
+	}
+	if avatar.UserID != actingUserID {
+		return ErrForbidden
+	}
+
+	if err := s.repo.SoftDelete(ctx, id); err != nil {
+		return err
+	}
+
+	// Best-effort cleanup of binary objects; errors only logged.
+	if err := s.storage.DeleteObject(ctx, avatar.S3Key); err != nil {
+		slog.Warn("delete original from s3", "err", err, "key", avatar.S3Key)
+	}
+	for _, key := range avatar.ThumbnailS3Keys {
+		if err := s.storage.DeleteObject(ctx, key); err != nil {
+			slog.Warn("delete thumbnail from s3", "err", err, "key", key)
+		}
+	}
+	return nil
 }
 
 func buildKey(userID string, id uuid.UUID, fileName, fallbackExt string) string {

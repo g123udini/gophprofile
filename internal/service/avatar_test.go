@@ -16,9 +16,12 @@ import (
 )
 
 type fakeRepo struct {
-	createFn   func(ctx context.Context, a *domain.Avatar) error
-	lastAvatar *domain.Avatar
-	calls      int
+	createFn     func(ctx context.Context, a *domain.Avatar) error
+	getFn        func(ctx context.Context, id uuid.UUID) (*domain.Avatar, error)
+	listFn       func(ctx context.Context, userID string) ([]*domain.Avatar, error)
+	softDeleteFn func(ctx context.Context, id uuid.UUID) error
+	lastAvatar   *domain.Avatar
+	calls        int
 }
 
 func (f *fakeRepo) Create(ctx context.Context, a *domain.Avatar) error {
@@ -30,8 +33,30 @@ func (f *fakeRepo) Create(ctx context.Context, a *domain.Avatar) error {
 	return nil
 }
 
+func (f *fakeRepo) GetByID(ctx context.Context, id uuid.UUID) (*domain.Avatar, error) {
+	if f.getFn != nil {
+		return f.getFn(ctx, id)
+	}
+	return nil, domain.ErrAvatarNotFound
+}
+
+func (f *fakeRepo) ListByUserID(ctx context.Context, userID string) ([]*domain.Avatar, error) {
+	if f.listFn != nil {
+		return f.listFn(ctx, userID)
+	}
+	return nil, nil
+}
+
+func (f *fakeRepo) SoftDelete(ctx context.Context, id uuid.UUID) error {
+	if f.softDeleteFn != nil {
+		return f.softDeleteFn(ctx, id)
+	}
+	return nil
+}
+
 type fakeStorage struct {
 	putFn    func(ctx context.Context, key, ct string, r io.Reader, size int64) error
+	getFn    func(ctx context.Context, key string) (io.ReadCloser, int64, string, error)
 	deleteFn func(ctx context.Context, key string) error
 	putCalls int
 	delCalls int
@@ -48,6 +73,13 @@ func (f *fakeStorage) PutObject(ctx context.Context, key, contentType string, r 
 		return f.putFn(ctx, key, contentType, bytes.NewReader(body), size)
 	}
 	return nil
+}
+
+func (f *fakeStorage) GetObject(ctx context.Context, key string) (io.ReadCloser, int64, string, error) {
+	if f.getFn != nil {
+		return f.getFn(ctx, key)
+	}
+	return io.NopCloser(bytes.NewReader(nil)), 0, "", nil
 }
 
 func (f *fakeStorage) DeleteObject(ctx context.Context, key string) error {
@@ -188,6 +220,53 @@ func TestAvatarService_Upload_UsesFallbackExtensionForUnknownFileName(t *testing
 	a, err := svc.Upload(context.Background(), in)
 	require.NoError(t, err)
 	require.True(t, strings.HasSuffix(a.S3Key, ".jpg"), "got %q", a.S3Key)
+}
+
+func TestAvatarService_Delete_RequiresOwnership(t *testing.T) {
+	owner := "owner"
+	other := "intruder"
+	avatar := &domain.Avatar{ID: uuid.New(), UserID: owner, S3Key: "k"}
+
+	repo := &fakeRepo{
+		getFn: func(ctx context.Context, id uuid.UUID) (*domain.Avatar, error) {
+			return avatar, nil
+		},
+	}
+	storage := &fakeStorage{}
+	svc := NewAvatarService(repo, storage, &fakePublisher{})
+
+	err := svc.Delete(context.Background(), avatar.ID, other)
+	require.ErrorIs(t, err, ErrForbidden)
+	require.Equal(t, 0, storage.delCalls)
+}
+
+func TestAvatarService_Delete_RemovesAllObjects(t *testing.T) {
+	owner := "owner"
+	avatar := &domain.Avatar{
+		ID:     uuid.New(),
+		UserID: owner,
+		S3Key:  "avatars/owner/main.jpg",
+		ThumbnailS3Keys: map[string]string{
+			"100x100": "thumbnails/x/100.jpg",
+			"300x300": "thumbnails/x/300.jpg",
+		},
+	}
+	softDeleted := false
+	repo := &fakeRepo{
+		getFn: func(ctx context.Context, id uuid.UUID) (*domain.Avatar, error) {
+			return avatar, nil
+		},
+		softDeleteFn: func(ctx context.Context, id uuid.UUID) error {
+			softDeleted = true
+			return nil
+		},
+	}
+	storage := &fakeStorage{}
+	svc := NewAvatarService(repo, storage, &fakePublisher{})
+
+	require.NoError(t, svc.Delete(context.Background(), avatar.ID, owner))
+	require.True(t, softDeleted)
+	require.Equal(t, 3, storage.delCalls, "original + 2 thumbnails")
 }
 
 func TestAvatarService_Upload_PublisherFailure_StillReturnsAvatar(t *testing.T) {

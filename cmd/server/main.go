@@ -83,7 +83,14 @@ func main() {
 	r.Use(middleware.Timeout(30 * time.Second))
 
 	r.Get("/health", healthHandler(pool, s3Client, publisher))
-	r.Post("/api/v1/avatars", avatarHandler.Upload)
+	r.Route("/api/v1", func(r chi.Router) {
+		r.Post("/avatars", avatarHandler.Upload)
+		r.Get("/avatars/{id}", avatarHandler.GetByID)
+		r.Get("/avatars/{id}/metadata", avatarHandler.GetMetadata)
+		r.Delete("/avatars/{id}", avatarHandler.Delete)
+		r.Get("/users/{user_id}/avatar", avatarHandler.GetUserLatest)
+		r.Get("/users/{user_id}/avatars", avatarHandler.ListUserAvatars)
+	})
 
 	fs := http.FileServer(http.Dir("web/static"))
 	r.Handle("/*", fs)

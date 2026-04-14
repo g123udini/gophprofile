@@ -5,10 +5,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"mime/multipart"
 	"net/http"
+	"strconv"
 	"time"
+
+	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 
 	"gophprofile/internal/domain"
 	"gophprofile/internal/service"
@@ -19,15 +24,20 @@ const (
 	maxBodySize = MaxFileSize + 1024
 )
 
-type avatarUploader interface {
+type avatarService interface {
 	Upload(ctx context.Context, in service.UploadInput) (*domain.Avatar, error)
+	Get(ctx context.Context, id uuid.UUID) (*domain.Avatar, error)
+	ListForUser(ctx context.Context, userID string) ([]*domain.Avatar, error)
+	GetLatestForUser(ctx context.Context, userID string) (*domain.Avatar, error)
+	OpenContent(ctx context.Context, id uuid.UUID, size string) (io.ReadCloser, int64, string, error)
+	Delete(ctx context.Context, id uuid.UUID, actingUserID string) error
 }
 
 type AvatarHandler struct {
-	svc avatarUploader
+	svc avatarService
 }
 
-func NewAvatarHandler(svc avatarUploader) *AvatarHandler {
+func NewAvatarHandler(svc avatarService) *AvatarHandler {
 	return &AvatarHandler{svc: svc}
 }
 
@@ -104,6 +114,161 @@ func (h *AvatarHandler) Upload(w http.ResponseWriter, r *http.Request) {
 		Status:    mapStatus(avatar.ProcessingStatus),
 		CreatedAt: avatar.CreatedAt,
 	})
+}
+
+func (h *AvatarHandler) GetByID(w http.ResponseWriter, r *http.Request) {
+	id, err := parseIDParam(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "Invalid avatar id", err.Error())
+		return
+	}
+	h.streamAvatar(w, r, id, r.URL.Query().Get("size"))
+}
+
+func (h *AvatarHandler) GetUserLatest(w http.ResponseWriter, r *http.Request) {
+	userID := chi.URLParam(r, "user_id")
+	if userID == "" {
+		writeError(w, http.StatusBadRequest, "user_id required", "")
+		return
+	}
+	avatar, err := h.svc.GetLatestForUser(r.Context(), userID)
+	if err != nil {
+		writeServiceError(w, err, "user latest avatar")
+		return
+	}
+	h.streamAvatar(w, r, avatar.ID, r.URL.Query().Get("size"))
+}
+
+func (h *AvatarHandler) GetMetadata(w http.ResponseWriter, r *http.Request) {
+	id, err := parseIDParam(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "Invalid avatar id", err.Error())
+		return
+	}
+	avatar, err := h.svc.Get(r.Context(), id)
+	if err != nil {
+		writeServiceError(w, err, "get metadata")
+		return
+	}
+	writeJSON(w, http.StatusOK, toMetadata(avatar))
+}
+
+func (h *AvatarHandler) ListUserAvatars(w http.ResponseWriter, r *http.Request) {
+	userID := chi.URLParam(r, "user_id")
+	if userID == "" {
+		writeError(w, http.StatusBadRequest, "user_id required", "")
+		return
+	}
+	list, err := h.svc.ListForUser(r.Context(), userID)
+	if err != nil {
+		writeServiceError(w, err, "list user avatars")
+		return
+	}
+	out := make([]metadataResponse, 0, len(list))
+	for _, a := range list {
+		out = append(out, toMetadata(a))
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (h *AvatarHandler) Delete(w http.ResponseWriter, r *http.Request) {
+	actingUserID := r.Header.Get("X-User-ID")
+	if actingUserID == "" {
+		writeError(w, http.StatusBadRequest, "X-User-ID header is required", "")
+		return
+	}
+	id, err := parseIDParam(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "Invalid avatar id", err.Error())
+		return
+	}
+
+	if err := h.svc.Delete(r.Context(), id, actingUserID); err != nil {
+		switch {
+		case errors.Is(err, domain.ErrAvatarNotFound):
+			writeError(w, http.StatusNotFound, "Avatar not found", "")
+		case errors.Is(err, service.ErrForbidden):
+			writeError(w, http.StatusForbidden, "Forbidden",
+				"You can only delete your own avatars")
+		default:
+			slog.Error("avatar delete failed", "err", err, "avatar_id", id)
+			writeError(w, http.StatusInternalServerError, "Internal error", "")
+		}
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *AvatarHandler) streamAvatar(w http.ResponseWriter, r *http.Request, id uuid.UUID, size string) {
+	rc, sz, contentType, err := h.svc.OpenContent(r.Context(), id, size)
+	if err != nil {
+		switch {
+		case errors.Is(err, domain.ErrAvatarNotFound):
+			writeError(w, http.StatusNotFound, "Avatar not found", "")
+		case errors.Is(err, service.ErrUnknownSize):
+			writeError(w, http.StatusBadRequest, "Unknown size",
+				"supported: 100x100, 300x300, original")
+		default:
+			slog.Error("open avatar content failed", "err", err, "avatar_id", id)
+			writeError(w, http.StatusInternalServerError, "Internal error", "")
+		}
+		return
+	}
+	defer rc.Close()
+
+	if contentType != "" {
+		w.Header().Set("Content-Type", contentType)
+	}
+	if sz > 0 {
+		w.Header().Set("Content-Length", strconv.FormatInt(sz, 10))
+	}
+	w.Header().Set("Cache-Control", "private, max-age=0")
+	if _, err := io.Copy(w, rc); err != nil {
+		slog.Warn("stream avatar to client interrupted", "err", err)
+	}
+}
+
+type metadataResponse struct {
+	ID               string            `json:"id"`
+	UserID           string            `json:"user_id"`
+	FileName         string            `json:"file_name"`
+	MimeType         string            `json:"mime_type"`
+	Size             int64             `json:"size"`
+	Thumbnails       map[string]string `json:"thumbnails,omitempty"`
+	UploadStatus     string            `json:"upload_status"`
+	ProcessingStatus string            `json:"processing_status"`
+	CreatedAt        time.Time         `json:"created_at"`
+	UpdatedAt        time.Time         `json:"updated_at"`
+}
+
+func toMetadata(a *domain.Avatar) metadataResponse {
+	return metadataResponse{
+		ID:               a.ID.String(),
+		UserID:           a.UserID,
+		FileName:         a.FileName,
+		MimeType:         a.MimeType,
+		Size:             a.SizeBytes,
+		Thumbnails:       a.ThumbnailS3Keys,
+		UploadStatus:     a.UploadStatus,
+		ProcessingStatus: a.ProcessingStatus,
+		CreatedAt:        a.CreatedAt,
+		UpdatedAt:        a.UpdatedAt,
+	}
+}
+
+func parseIDParam(r *http.Request) (uuid.UUID, error) {
+	raw := chi.URLParam(r, "id")
+	return uuid.Parse(raw)
+}
+
+func writeServiceError(w http.ResponseWriter, err error, op string) {
+	switch {
+	case errors.Is(err, domain.ErrAvatarNotFound):
+		writeError(w, http.StatusNotFound, "Avatar not found", "")
+	default:
+		slog.Error(op, "err", err)
+		writeError(w, http.StatusInternalServerError, "Internal error", "")
+	}
 }
 
 func openFormFile(r *http.Request, fields ...string) (multipart.File, *multipart.FileHeader, error) {
