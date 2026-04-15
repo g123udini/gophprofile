@@ -3,6 +3,7 @@ package worker
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"image/jpeg"
 	"io"
@@ -33,6 +34,7 @@ type objectStore interface {
 }
 
 type avatarRepo interface {
+	GetProcessingStatus(ctx context.Context, id uuid.UUID) (string, error)
 	UpdateProcessing(ctx context.Context, id uuid.UUID, status string, thumbs map[string]string) error
 }
 
@@ -49,6 +51,21 @@ func (p *AvatarProcessor) HandleUploaded(ctx context.Context, evt events.AvatarU
 	avatarID, err := uuid.Parse(evt.AvatarID)
 	if err != nil {
 		return fmt.Errorf("parse avatar id %q: %w", evt.AvatarID, err)
+	}
+
+	// Idempotency: if this avatar has already been processed, ack and skip.
+	// Protects against redelivery from RabbitMQ (nack, channel close, restart).
+	status, err := p.repo.GetProcessingStatus(ctx, avatarID)
+	if err != nil {
+		if errors.Is(err, domain.ErrAvatarNotFound) {
+			slog.Warn("avatar not found, skipping", "avatar_id", avatarID)
+			return nil
+		}
+		return fmt.Errorf("load processing status: %w", err)
+	}
+	if status == domain.ProcessingStatusCompleted {
+		slog.Info("avatar already processed, skipping", "avatar_id", avatarID)
+		return nil
 	}
 
 	rc, _, _, err := p.storage.GetObject(ctx, evt.S3Key)

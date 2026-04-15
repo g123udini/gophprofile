@@ -96,6 +96,19 @@ WHERE id = $1 AND deleted_at IS NULL`
 	return nil
 }
 
+func (r *AvatarRepository) GetProcessingStatus(ctx context.Context, id uuid.UUID) (string, error) {
+	const q = `SELECT processing_status FROM avatars WHERE id = $1 AND deleted_at IS NULL`
+	var status string
+	err := r.pool.QueryRow(ctx, q, id).Scan(&status)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", domain.ErrAvatarNotFound
+	}
+	if err != nil {
+		return "", fmt.Errorf("get processing status: %w", err)
+	}
+	return status, nil
+}
+
 func (r *AvatarRepository) UpdateProcessing(ctx context.Context, id uuid.UUID, status string, thumbs map[string]string) error {
 	var thumbsJSON []byte
 	if thumbs != nil {

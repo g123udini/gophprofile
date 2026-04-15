@@ -31,11 +31,11 @@ func makeTestJPEG(t *testing.T, w, h int) []byte {
 }
 
 type fakeStore struct {
-	getBody      []byte
-	getErr       error
-	putFn        func(ctx context.Context, key, ct string, r io.Reader, size int64) error
-	putCalls     int
-	uploaded     map[string][]byte
+	getBody  []byte
+	getErr   error
+	putFn    func(ctx context.Context, key, ct string, r io.Reader, size int64) error
+	putCalls int
+	uploaded map[string][]byte
 }
 
 func (f *fakeStore) GetObject(ctx context.Context, key string) (io.ReadCloser, int64, string, error) {
@@ -59,11 +59,27 @@ func (f *fakeStore) PutObject(ctx context.Context, key, contentType string, r io
 }
 
 type fakeRepo struct {
-	updateFn    func(ctx context.Context, id uuid.UUID, status string, thumbs map[string]string) error
-	calls       int
-	lastID      uuid.UUID
-	lastStatus  string
-	lastThumbs  map[string]string
+	statusFn   func(ctx context.Context, id uuid.UUID) (string, error)
+	status     string
+	statusErr  error
+	updateFn   func(ctx context.Context, id uuid.UUID, status string, thumbs map[string]string) error
+	calls      int
+	lastID     uuid.UUID
+	lastStatus string
+	lastThumbs map[string]string
+}
+
+func (f *fakeRepo) GetProcessingStatus(ctx context.Context, id uuid.UUID) (string, error) {
+	if f.statusFn != nil {
+		return f.statusFn(ctx, id)
+	}
+	if f.statusErr != nil {
+		return "", f.statusErr
+	}
+	if f.status == "" {
+		return domain.ProcessingStatusPending, nil
+	}
+	return f.status, nil
 }
 
 func (f *fakeRepo) UpdateProcessing(ctx context.Context, id uuid.UUID, status string, thumbs map[string]string) error {
@@ -140,6 +156,33 @@ func TestAvatarProcessor_HandleUploaded_BrokenImage_MarksFailed(t *testing.T) {
 	require.Error(t, err)
 	require.Equal(t, 1, repo.calls)
 	require.Equal(t, domain.ProcessingStatusFailed, repo.lastStatus)
+}
+
+func TestAvatarProcessor_HandleUploaded_Idempotent_SkipsCompleted(t *testing.T) {
+	store := &fakeStore{getBody: makeTestJPEG(t, 640, 480)}
+	repo := &fakeRepo{status: domain.ProcessingStatusCompleted}
+	p := NewAvatarProcessor(store, repo)
+
+	err := p.HandleUploaded(context.Background(), events.AvatarUploadedEvent{
+		AvatarID: uuid.New().String(),
+		S3Key:    "avatars/u1/src.jpg",
+	})
+	require.NoError(t, err)
+	require.Equal(t, 0, store.putCalls, "must not reupload thumbnails on redelivery")
+	require.Equal(t, 0, repo.calls, "must not touch processing status on redelivery")
+}
+
+func TestAvatarProcessor_HandleUploaded_AvatarNotFound_Skips(t *testing.T) {
+	store := &fakeStore{getBody: makeTestJPEG(t, 200, 200)}
+	repo := &fakeRepo{statusErr: domain.ErrAvatarNotFound}
+	p := NewAvatarProcessor(store, repo)
+
+	err := p.HandleUploaded(context.Background(), events.AvatarUploadedEvent{
+		AvatarID: uuid.New().String(), S3Key: "x",
+	})
+	require.NoError(t, err)
+	require.Equal(t, 0, store.putCalls)
+	require.Equal(t, 0, repo.calls)
 }
 
 func TestAvatarProcessor_HandleUploaded_UploadFails_MarksFailed(t *testing.T) {
