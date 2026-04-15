@@ -103,7 +103,7 @@ func TestPublisher_PublishAvatarUploaded_DeliversMessage(t *testing.T) {
 		require.Equal(t, events.RoutingKeyAvatarUploaded, msg.RoutingKey)
 		require.Equal(t, "application/json", msg.ContentType)
 		require.Equal(t, evt.AvatarID, msg.MessageId)
-		require.Equal(t, uint8(amqp.Persistent), msg.DeliveryMode)
+		require.Equal(t, amqp.Persistent, msg.DeliveryMode)
 
 		var got events.AvatarUploadedEvent
 		require.NoError(t, json.Unmarshal(msg.Body, &got))
