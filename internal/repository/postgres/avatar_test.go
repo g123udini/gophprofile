@@ -72,6 +72,7 @@ func truncate(t *testing.T) {
 
 func newAvatar(userID string) *domain.Avatar {
 	return &domain.Avatar{
+		ID:               uuid.New(),
 		UserID:           userID,
 		FileName:         "me.jpg",
 		MimeType:         "image/jpeg",
@@ -82,17 +83,21 @@ func newAvatar(userID string) *domain.Avatar {
 	}
 }
 
-func TestAvatarRepository_Create_FillsGeneratedFields(t *testing.T) {
+func TestAvatarRepository_Create_PersistsRowAndFillsTimestamps(t *testing.T) {
 	truncate(t)
+	ctx := context.Background()
 	repo := postgres.NewAvatarRepository(testPool)
 
 	a := newAvatar("u1")
-	err := repo.Create(context.Background(), a)
-
-	require.NoError(t, err)
-	require.NotEqual(t, "00000000-0000-0000-0000-000000000000", a.ID.String(), "id must be generated")
+	wantID := a.ID
+	require.NoError(t, repo.Create(ctx, a))
+	require.Equal(t, wantID, a.ID, "caller-provided id must be preserved")
 	require.False(t, a.CreatedAt.IsZero())
 	require.False(t, a.UpdatedAt.IsZero())
+
+	got, err := repo.GetByID(ctx, wantID)
+	require.NoError(t, err)
+	require.Equal(t, wantID, got.ID)
 }
 
 func TestAvatarRepository_GetByID_ReturnsCreatedRow(t *testing.T) {
@@ -165,11 +170,50 @@ func TestAvatarRepository_ListByUserID_ScopesAndOrders(t *testing.T) {
 	foreign := newAvatar("u2")
 	require.NoError(t, repo.Create(ctx, foreign))
 
-	list, err := repo.ListByUserID(ctx, "u1")
+	list, err := repo.ListByUserID(ctx, "u1", 100, 0)
 	require.NoError(t, err)
 	require.Len(t, list, 2)
 	require.Equal(t, newer.ID, list[0].ID, "newest first")
 	require.Equal(t, older.ID, list[1].ID)
+}
+
+func TestAvatarRepository_ListByUserID_LimitAndOffset(t *testing.T) {
+	truncate(t)
+	ctx := context.Background()
+	repo := postgres.NewAvatarRepository(testPool)
+
+	created := make([]*domain.Avatar, 0, 5)
+	for i := 0; i < 5; i++ {
+		a := newAvatar("u1")
+		require.NoError(t, repo.Create(ctx, a))
+		created = append(created, a)
+		time.Sleep(2 * time.Millisecond)
+	}
+
+	// Page 1: two newest, newest first.
+	page1, err := repo.ListByUserID(ctx, "u1", 2, 0)
+	require.NoError(t, err)
+	require.Len(t, page1, 2)
+	require.Equal(t, created[4].ID, page1[0].ID)
+	require.Equal(t, created[3].ID, page1[1].ID)
+
+	// Page 2: next two.
+	page2, err := repo.ListByUserID(ctx, "u1", 2, 2)
+	require.NoError(t, err)
+	require.Len(t, page2, 2)
+	require.Equal(t, created[2].ID, page2[0].ID)
+	require.Equal(t, created[1].ID, page2[1].ID)
+
+	// Page 3: tail — only one row left.
+	page3, err := repo.ListByUserID(ctx, "u1", 2, 4)
+	require.NoError(t, err)
+	require.Len(t, page3, 1)
+	require.Equal(t, created[0].ID, page3[0].ID)
+
+	// Beyond the end — empty.
+	tail, err := repo.ListByUserID(ctx, "u1", 2, 10)
+	require.NoError(t, err)
+	require.Empty(t, tail)
 }
 
 func TestAvatarRepository_ListByUserID_HidesSoftDeleted(t *testing.T) {
@@ -183,7 +227,7 @@ func TestAvatarRepository_ListByUserID_HidesSoftDeleted(t *testing.T) {
 	require.NoError(t, repo.Create(ctx, dead))
 	require.NoError(t, repo.SoftDelete(ctx, dead.ID))
 
-	list, err := repo.ListByUserID(ctx, "u1")
+	list, err := repo.ListByUserID(ctx, "u1", 100, 0)
 	require.NoError(t, err)
 	require.Len(t, list, 1)
 	require.Equal(t, kept.ID, list[0].ID)
@@ -222,22 +266,6 @@ func TestAvatarRepository_SoftDelete_SecondCallReturnsNotFound(t *testing.T) {
 	require.NoError(t, repo.Create(ctx, a))
 	require.NoError(t, repo.SoftDelete(ctx, a.ID))
 	require.ErrorIs(t, repo.SoftDelete(ctx, a.ID), domain.ErrAvatarNotFound)
-}
-
-func TestAvatarRepository_Create_AcceptsExternalID(t *testing.T) {
-	truncate(t)
-	ctx := context.Background()
-	repo := postgres.NewAvatarRepository(testPool)
-
-	wantID := uuid.New()
-	a := newAvatar("u1")
-	a.ID = wantID
-	require.NoError(t, repo.Create(ctx, a))
-	require.Equal(t, wantID, a.ID)
-
-	got, err := repo.GetByID(ctx, wantID)
-	require.NoError(t, err)
-	require.Equal(t, wantID, got.ID)
 }
 
 func TestAvatarRepository_UpdateProcessing_NotFound(t *testing.T) {

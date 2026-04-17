@@ -33,6 +33,8 @@ type fakeUploader struct {
 	openFn      func(ctx context.Context, id uuid.UUID, size string) (io.ReadCloser, int64, string, error)
 	deleteFn    func(ctx context.Context, id uuid.UUID, actingUserID string) error
 	deleteCalls int
+	lastLimit   int
+	lastOffset  int
 }
 
 func (f *fakeUploader) Upload(ctx context.Context, in service.UploadInput) (*domain.Avatar, error) {
@@ -64,7 +66,9 @@ func (f *fakeUploader) Get(ctx context.Context, id uuid.UUID) (*domain.Avatar, e
 	return nil, domain.ErrAvatarNotFound
 }
 
-func (f *fakeUploader) ListForUser(ctx context.Context, userID string) ([]*domain.Avatar, error) {
+func (f *fakeUploader) ListForUser(ctx context.Context, userID string, limit, offset int) ([]*domain.Avatar, error) {
+	f.lastLimit = limit
+	f.lastOffset = offset
 	if f.listFn != nil {
 		return f.listFn(ctx, userID)
 	}
@@ -327,6 +331,41 @@ func TestAvatarHandler_ListUserAvatars_ReturnsArray(t *testing.T) {
 	var list []map[string]any
 	require.NoError(t, json.NewDecoder(rec.Body).Decode(&list))
 	require.Len(t, list, 2)
+}
+
+func TestAvatarHandler_ListUserAvatars_PassesPagination(t *testing.T) {
+	fake := &fakeUploader{
+		listFn: func(ctx context.Context, _ string) ([]*domain.Avatar, error) {
+			return nil, nil
+		},
+	}
+	h := handlers.NewAvatarHandler(fake)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/users/u1/avatars?limit=5&offset=10", nil)
+	rec := httptest.NewRecorder()
+	newRouter(h).ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, 5, fake.lastLimit)
+	require.Equal(t, 10, fake.lastOffset)
+}
+
+func TestAvatarHandler_ListUserAvatars_InvalidPaginationRejected(t *testing.T) {
+	cases := []string{
+		"?limit=abc",
+		"?offset=-1",
+		"?limit=-5",
+	}
+	for _, qs := range cases {
+		t.Run(qs, func(t *testing.T) {
+			fake := &fakeUploader{}
+			h := handlers.NewAvatarHandler(fake)
+			req := httptest.NewRequest(http.MethodGet, "/api/v1/users/u1/avatars"+qs, nil)
+			rec := httptest.NewRecorder()
+			newRouter(h).ServeHTTP(rec, req)
+			require.Equal(t, http.StatusBadRequest, rec.Code)
+		})
+	}
 }
 
 func TestAvatarHandler_Delete_NoUserID(t *testing.T) {

@@ -37,7 +37,7 @@ var allowedContentTypes = map[string]string{
 type avatarRepo interface {
 	Create(ctx context.Context, a *domain.Avatar) error
 	GetByID(ctx context.Context, id uuid.UUID) (*domain.Avatar, error)
-	ListByUserID(ctx context.Context, userID string) ([]*domain.Avatar, error)
+	ListByUserID(ctx context.Context, userID string, limit, offset int) ([]*domain.Avatar, error)
 	GetLatestByUserID(ctx context.Context, userID string) (*domain.Avatar, error)
 	SoftDelete(ctx context.Context, id uuid.UUID) error
 }
@@ -124,8 +124,22 @@ func (s *AvatarService) Get(ctx context.Context, id uuid.UUID) (*domain.Avatar, 
 	return s.repo.GetByID(ctx, id)
 }
 
-func (s *AvatarService) ListForUser(ctx context.Context, userID string) ([]*domain.Avatar, error) {
-	return s.repo.ListByUserID(ctx, userID)
+const (
+	DefaultListLimit = 20
+	MaxListLimit     = 100
+)
+
+func (s *AvatarService) ListForUser(ctx context.Context, userID string, limit, offset int) ([]*domain.Avatar, error) {
+	if limit <= 0 {
+		limit = DefaultListLimit
+	}
+	if limit > MaxListLimit {
+		limit = MaxListLimit
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	return s.repo.ListByUserID(ctx, userID, limit, offset)
 }
 
 func (s *AvatarService) GetLatestForUser(ctx context.Context, userID string) (*domain.Avatar, error) {

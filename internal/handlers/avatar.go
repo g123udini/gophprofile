@@ -27,7 +27,7 @@ const (
 type avatarService interface {
 	Upload(ctx context.Context, in service.UploadInput) (*domain.Avatar, error)
 	Get(ctx context.Context, id uuid.UUID) (*domain.Avatar, error)
-	ListForUser(ctx context.Context, userID string) ([]*domain.Avatar, error)
+	ListForUser(ctx context.Context, userID string, limit, offset int) ([]*domain.Avatar, error)
 	GetLatestForUser(ctx context.Context, userID string) (*domain.Avatar, error)
 	OpenContent(ctx context.Context, id uuid.UUID, size string) (io.ReadCloser, int64, string, error)
 	Delete(ctx context.Context, id uuid.UUID, actingUserID string) error
@@ -159,7 +159,17 @@ func (h *AvatarHandler) ListUserAvatars(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, "user_id required", "")
 		return
 	}
-	list, err := h.svc.ListForUser(r.Context(), userID)
+	limit, err := parseNonNegativeIntQuery(r, "limit")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "Invalid limit", err.Error())
+		return
+	}
+	offset, err := parseNonNegativeIntQuery(r, "offset")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "Invalid offset", err.Error())
+		return
+	}
+	list, err := h.svc.ListForUser(r.Context(), userID, limit, offset)
 	if err != nil {
 		writeServiceError(w, err, "list user avatars")
 		return
@@ -259,6 +269,24 @@ func toMetadata(a *domain.Avatar) metadataResponse {
 func parseIDParam(r *http.Request) (uuid.UUID, error) {
 	raw := chi.URLParam(r, "id")
 	return uuid.Parse(raw)
+}
+
+// parseNonNegativeIntQuery reads an optional int query parameter. Missing or
+// empty value returns 0 (service layer applies defaults). Non-numeric or
+// negative values return an error.
+func parseNonNegativeIntQuery(r *http.Request, key string) (int, error) {
+	raw := r.URL.Query().Get(key)
+	if raw == "" {
+		return 0, nil
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, fmt.Errorf("%s must be an integer", key)
+	}
+	if n < 0 {
+		return 0, fmt.Errorf("%s must be non-negative", key)
+	}
+	return n, nil
 }
 
 func writeServiceError(w http.ResponseWriter, err error, op string) {

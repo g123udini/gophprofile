@@ -25,21 +25,6 @@ const avatarColumns = `id, user_id, file_name, mime_type, size_bytes, s3_key, th
        upload_status, processing_status, created_at, updated_at`
 
 func (r *AvatarRepository) Create(ctx context.Context, a *domain.Avatar) error {
-	if a.ID == uuid.Nil {
-		const q = `
-INSERT INTO avatars (user_id, file_name, mime_type, size_bytes, s3_key, upload_status, processing_status)
-VALUES ($1, $2, $3, $4, $5, $6, $7)
-RETURNING id, created_at, updated_at`
-		err := r.pool.QueryRow(ctx, q,
-			a.UserID, a.FileName, a.MimeType, a.SizeBytes, a.S3Key,
-			a.UploadStatus, a.ProcessingStatus,
-		).Scan(&a.ID, &a.CreatedAt, &a.UpdatedAt)
-		if err != nil {
-			return fmt.Errorf("create avatar: %w", err)
-		}
-		return nil
-	}
-
 	const q = `
 INSERT INTO avatars (id, user_id, file_name, mime_type, size_bytes, s3_key, upload_status, processing_status)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
@@ -59,11 +44,12 @@ func (r *AvatarRepository) GetByID(ctx context.Context, id uuid.UUID) (*domain.A
 	return scanAvatar(r.pool.QueryRow(ctx, q, id))
 }
 
-func (r *AvatarRepository) ListByUserID(ctx context.Context, userID string) ([]*domain.Avatar, error) {
+func (r *AvatarRepository) ListByUserID(ctx context.Context, userID string, limit, offset int) ([]*domain.Avatar, error) {
 	q := `SELECT ` + avatarColumns + ` FROM avatars
 WHERE user_id = $1 AND deleted_at IS NULL
-ORDER BY created_at DESC`
-	rows, err := r.pool.Query(ctx, q, userID)
+ORDER BY created_at DESC
+LIMIT $2 OFFSET $3`
+	rows, err := r.pool.Query(ctx, q, userID, limit, offset)
 	if err != nil {
 		return nil, fmt.Errorf("list avatars: %w", err)
 	}

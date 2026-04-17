@@ -22,6 +22,8 @@ type fakeRepo struct {
 	latestFn     func(ctx context.Context, userID string) (*domain.Avatar, error)
 	softDeleteFn func(ctx context.Context, id uuid.UUID) error
 	lastAvatar   *domain.Avatar
+	lastLimit    int
+	lastOffset   int
 	calls        int
 }
 
@@ -41,7 +43,9 @@ func (f *fakeRepo) GetByID(ctx context.Context, id uuid.UUID) (*domain.Avatar, e
 	return nil, domain.ErrAvatarNotFound
 }
 
-func (f *fakeRepo) ListByUserID(ctx context.Context, userID string) ([]*domain.Avatar, error) {
+func (f *fakeRepo) ListByUserID(ctx context.Context, userID string, limit, offset int) ([]*domain.Avatar, error) {
+	f.lastLimit = limit
+	f.lastOffset = offset
 	if f.listFn != nil {
 		return f.listFn(ctx, userID)
 	}
@@ -262,6 +266,31 @@ func TestAvatarService_GetLatestForUser_Empty(t *testing.T) {
 
 	_, err := svc.GetLatestForUser(context.Background(), "u1")
 	require.ErrorIs(t, err, domain.ErrAvatarNotFound)
+}
+
+func TestAvatarService_ListForUser_AppliesDefaultsAndClamps(t *testing.T) {
+	cases := []struct {
+		name          string
+		limit, offset int
+		wantLimit     int
+		wantOffset    int
+	}{
+		{"zero limit -> default", 0, 0, DefaultListLimit, 0},
+		{"negative limit -> default", -5, 0, DefaultListLimit, 0},
+		{"huge limit clamped", 10000, 0, MaxListLimit, 0},
+		{"negative offset -> 0", 10, -3, 10, 0},
+		{"normal passthrough", 15, 40, 15, 40},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			repo := &fakeRepo{}
+			svc := NewAvatarService(repo, &fakeStorage{}, &fakePublisher{})
+			_, err := svc.ListForUser(context.Background(), "u1", c.limit, c.offset)
+			require.NoError(t, err)
+			require.Equal(t, c.wantLimit, repo.lastLimit)
+			require.Equal(t, c.wantOffset, repo.lastOffset)
+		})
+	}
 }
 
 func TestAvatarService_OpenContent_Original(t *testing.T) {
