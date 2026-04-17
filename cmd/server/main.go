@@ -102,25 +102,29 @@ func main() {
 		WriteTimeout: cfg.HTTP.WriteTimeout,
 	}
 
+	srvErr := make(chan error, 1)
 	go func() {
 		logger.Info("http server starting", "addr", srv.Addr)
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			logger.Error("http server failed", "err", err)
-			os.Exit(1)
+			srvErr <- err
 		}
 	}()
 
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-	<-quit
-	logger.Info("shutdown signal received")
+
+	select {
+	case err := <-srvErr:
+		logger.Error("http server failed", "err", err)
+	case sig := <-quit:
+		logger.Info("shutdown signal received", "signal", sig.String())
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), cfg.HTTP.ShutdownTimeout)
 	defer cancel()
 
 	if err := srv.Shutdown(ctx); err != nil {
 		logger.Error("graceful shutdown failed", "err", err)
-		os.Exit(1)
 	}
 	logger.Info("server stopped")
 }

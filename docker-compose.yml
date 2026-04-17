@@ -1,6 +1,7 @@
 services:
   postgres:
     image: postgres:16-alpine
+    restart: unless-stopped
     environment:
       POSTGRES_USER: gophprofile
       POSTGRES_PASSWORD: gophprofile
@@ -16,7 +17,8 @@ services:
       retries: 5
 
   minio:
-    image: minio/minio:latest
+    image: minio/minio:RELEASE.2025-09-07T16-13-09Z
+    restart: unless-stopped
     command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: minioadmin
@@ -34,6 +36,7 @@ services:
 
   rabbitmq:
     image: rabbitmq:3-management-alpine
+    restart: unless-stopped
     environment:
       RABBITMQ_DEFAULT_USER: guest
       RABBITMQ_DEFAULT_PASS: guest
@@ -52,6 +55,7 @@ services:
     build:
       context: .
       dockerfile: docker/server.Dockerfile
+    restart: unless-stopped
     environment:
       HTTP_PORT: "8080"
       POSTGRES_DSN: "postgres://gophprofile:gophprofile@postgres:5432/gophprofile?sslmode=disable"
@@ -75,6 +79,7 @@ services:
     build:
       context: .
       dockerfile: docker/worker.Dockerfile
+    restart: unless-stopped
     environment:
       POSTGRES_DSN: "postgres://gophprofile:gophprofile@postgres:5432/gophprofile?sslmode=disable"
       S3_ENDPOINT: "minio:9000"
