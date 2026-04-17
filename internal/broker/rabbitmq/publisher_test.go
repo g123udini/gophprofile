@@ -227,6 +227,63 @@ type errorString string
 
 func (e errorString) Error() string { return string(e) }
 
+func TestConsumer_Run_ReconnectsAfterChannelClose(t *testing.T) {
+	c, err := rabbitmq.NewConsumer(
+		testAmqpURL, testExchange, "test-consumer-reconnect",
+		events.RoutingKeyAvatarUploaded,
+		rabbitmq.WithReconnectBackoff(100*time.Millisecond),
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = c.Close() })
+
+	received := make(chan string, 16)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- c.Run(ctx, func(_ context.Context, evt events.AvatarUploadedEvent) error {
+			received <- evt.AvatarID
+			return nil
+		})
+	}()
+
+	p := newPublisher(t)
+	require.NoError(t, p.PublishAvatarUploaded(context.Background(), events.AvatarUploadedEvent{
+		AvatarID: "before-reconnect", UserID: "u", S3Key: "k",
+	}))
+	waitForID(t, received, "before-reconnect", 3*time.Second)
+
+	// Give Ack a moment to flush so the broker doesn't redeliver "before-reconnect".
+	time.Sleep(100 * time.Millisecond)
+
+	require.NoError(t, c.ForceReconnect())
+
+	require.Eventually(t, c.Healthy, 3*time.Second, 50*time.Millisecond,
+		"consumer must come back healthy after reconnect")
+
+	require.NoError(t, p.PublishAvatarUploaded(context.Background(), events.AvatarUploadedEvent{
+		AvatarID: "after-reconnect", UserID: "u", S3Key: "k",
+	}))
+	waitForID(t, received, "after-reconnect", 3*time.Second)
+
+	cancel()
+	<-done
+}
+
+func waitForID(t *testing.T, c <-chan string, want string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.After(timeout)
+	for {
+		select {
+		case got := <-c:
+			if got == want {
+				return
+			}
+		case <-deadline:
+			t.Fatalf("did not receive %q within %s", want, timeout)
+		}
+	}
+}
+
 func TestPublisher_DropsMessagesWhenRoutingKeyDoesNotMatchAnyBinding(t *testing.T) {
 	// Queue bound to "avatar.uploaded" but publisher currently only emits that
 	// routing key. This test asserts topic-routing semantics: publishing the
