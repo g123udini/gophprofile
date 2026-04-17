@@ -5,21 +5,42 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"time"
 
 	amqp "github.com/rabbitmq/amqp091-go"
 
 	"gophprofile/internal/events"
 )
 
+const (
+	defaultMaxRetryAttempts    = 3
+	defaultInitialRetryBackoff = 500 * time.Millisecond
+)
+
 type AvatarUploadedHandler func(ctx context.Context, evt events.AvatarUploadedEvent) error
 
 type Consumer struct {
-	conn  *amqp.Connection
-	ch    *amqp.Channel
-	queue string
+	conn                *amqp.Connection
+	ch                  *amqp.Channel
+	queue               string
+	maxRetryAttempts    int
+	initialRetryBackoff time.Duration
 }
 
-func NewConsumer(url, exchange, queue, routingKey string) (*Consumer, error) {
+type ConsumerOption func(*Consumer)
+
+// WithRetry overrides the default exponential-backoff retry policy. maxAttempts
+// is the total number of handler invocations per message (including the first);
+// initialBackoff is the pause before the first retry and doubles on each
+// subsequent attempt.
+func WithRetry(maxAttempts int, initialBackoff time.Duration) ConsumerOption {
+	return func(c *Consumer) {
+		c.maxRetryAttempts = maxAttempts
+		c.initialRetryBackoff = initialBackoff
+	}
+}
+
+func NewConsumer(url, exchange, queue, routingKey string, opts ...ConsumerOption) (*Consumer, error) {
 	conn, err := amqp.Dial(url)
 	if err != nil {
 		return nil, fmt.Errorf("rabbitmq: dial: %w", err)
@@ -54,7 +75,17 @@ func NewConsumer(url, exchange, queue, routingKey string) (*Consumer, error) {
 		return nil, fmt.Errorf("rabbitmq: qos: %w", err)
 	}
 
-	return &Consumer{conn: conn, ch: ch, queue: queue}, nil
+	c := &Consumer{
+		conn:                conn,
+		ch:                  ch,
+		queue:               queue,
+		maxRetryAttempts:    defaultMaxRetryAttempts,
+		initialRetryBackoff: defaultInitialRetryBackoff,
+	}
+	for _, opt := range opts {
+		opt(c)
+	}
+	return c, nil
 }
 
 func (c *Consumer) Close() error {
@@ -90,19 +121,45 @@ func (c *Consumer) Run(ctx context.Context, handler AvatarUploadedHandler) error
 func (c *Consumer) handleDelivery(ctx context.Context, handler AvatarUploadedHandler, msg amqp.Delivery) {
 	var evt events.AvatarUploadedEvent
 	if err := json.Unmarshal(msg.Body, &evt); err != nil {
-		slog.Error("decode delivery", "err", err, "message_id", msg.MessageId)
+		// Malformed payload is a poison message — retrying won't help.
+		slog.Error("decode delivery, dropping", "err", err, "message_id", msg.MessageId)
 		_ = msg.Nack(false, false)
 		return
 	}
 
-	if err := handler(ctx, evt); err != nil {
-		slog.Error("handle avatar.uploaded",
-			"err", err, "avatar_id", evt.AvatarID, "message_id", msg.MessageId)
-		_ = msg.Nack(false, false)
-		return
+	var lastErr error
+	for attempt := 1; attempt <= c.maxRetryAttempts; attempt++ {
+		if err := ctx.Err(); err != nil {
+			_ = msg.Nack(false, true) // shutting down — let the broker redeliver later
+			return
+		}
+
+		if err := handler(ctx, evt); err == nil {
+			if ackErr := msg.Ack(false); ackErr != nil {
+				slog.Error("ack delivery", "err", ackErr, "message_id", msg.MessageId)
+			}
+			return
+		} else {
+			lastErr = err
+		}
+
+		if attempt == c.maxRetryAttempts {
+			break
+		}
+		backoff := c.initialRetryBackoff * (1 << (attempt - 1))
+		slog.Warn("handler failed, retrying",
+			"err", lastErr, "attempt", attempt, "backoff", backoff,
+			"avatar_id", evt.AvatarID, "message_id", msg.MessageId)
+		select {
+		case <-ctx.Done():
+			_ = msg.Nack(false, true)
+			return
+		case <-time.After(backoff):
+		}
 	}
 
-	if err := msg.Ack(false); err != nil {
-		slog.Error("ack delivery", "err", err, "message_id", msg.MessageId)
-	}
+	slog.Error("handler exhausted retries, dropping",
+		"err", lastErr, "attempts", c.maxRetryAttempts,
+		"avatar_id", evt.AvatarID, "message_id", msg.MessageId)
+	_ = msg.Nack(false, false)
 }

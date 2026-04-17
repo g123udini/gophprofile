@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log"
 	"os"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -150,16 +151,20 @@ func TestConsumer_Run_DeliversToHandlerAndAcks(t *testing.T) {
 	require.True(t, c.Healthy(), "connection must still be healthy after ctx cancel")
 }
 
-func TestConsumer_Run_HandlerErrorNacksMessage(t *testing.T) {
-	c, err := rabbitmq.NewConsumer(testAmqpURL, testExchange, "test-consumer-error", events.RoutingKeyAvatarUploaded)
+func TestConsumer_Run_RetriesOnErrorThenGivesUp(t *testing.T) {
+	c, err := rabbitmq.NewConsumer(
+		testAmqpURL, testExchange, "test-consumer-error",
+		events.RoutingKeyAvatarUploaded,
+		rabbitmq.WithRetry(3, 10*time.Millisecond),
+	)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = c.Close() })
 
-	attempts := make(chan struct{}, 1)
+	var attempts atomic.Int32
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
 		_ = c.Run(ctx, func(_ context.Context, _ events.AvatarUploadedEvent) error {
-			attempts <- struct{}{}
+			attempts.Add(1)
 			return errTest
 		})
 	}()
@@ -169,11 +174,49 @@ func TestConsumer_Run_HandlerErrorNacksMessage(t *testing.T) {
 		AvatarID: "err", UserID: "u", S3Key: "k",
 	}))
 
-	select {
-	case <-attempts:
-	case <-time.After(3 * time.Second):
-		t.Fatal("handler was never invoked")
-	}
+	require.Eventually(t,
+		func() bool { return attempts.Load() == 3 },
+		2*time.Second, 20*time.Millisecond,
+		"handler must be retried up to maxAttempts")
+
+	cancel()
+}
+
+func TestConsumer_Run_RetriesOnErrorThenAcks(t *testing.T) {
+	c, err := rabbitmq.NewConsumer(
+		testAmqpURL, testExchange, "test-consumer-retry-ok",
+		events.RoutingKeyAvatarUploaded,
+		rabbitmq.WithRetry(3, 10*time.Millisecond),
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = c.Close() })
+
+	var attempts atomic.Int32
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		_ = c.Run(ctx, func(_ context.Context, _ events.AvatarUploadedEvent) error {
+			n := attempts.Add(1)
+			if n < 3 {
+				return errTest
+			}
+			return nil
+		})
+	}()
+
+	p := newPublisher(t)
+	require.NoError(t, p.PublishAvatarUploaded(context.Background(), events.AvatarUploadedEvent{
+		AvatarID: "retry-ok", UserID: "u", S3Key: "k",
+	}))
+
+	require.Eventually(t,
+		func() bool { return attempts.Load() == 3 },
+		2*time.Second, 20*time.Millisecond,
+		"handler must succeed on third attempt")
+
+	// Give the acker a moment; if the message were nacked-with-requeue, attempts
+	// would keep climbing. Assert it stays at 3.
+	time.Sleep(200 * time.Millisecond)
+	require.EqualValues(t, 3, attempts.Load(), "successful attempt must ack, not requeue")
 
 	cancel()
 }
