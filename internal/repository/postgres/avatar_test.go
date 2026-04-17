@@ -189,6 +189,30 @@ func TestAvatarRepository_ListByUserID_HidesSoftDeleted(t *testing.T) {
 	require.Equal(t, kept.ID, list[0].ID)
 }
 
+func TestAvatarRepository_GetLatestByUserID_ReturnsNewestAndSkipsDeleted(t *testing.T) {
+	truncate(t)
+	ctx := context.Background()
+	repo := postgres.NewAvatarRepository(testPool)
+
+	older := newAvatar("u1")
+	require.NoError(t, repo.Create(ctx, older))
+	time.Sleep(5 * time.Millisecond)
+	newer := newAvatar("u1")
+	require.NoError(t, repo.Create(ctx, newer))
+
+	got, err := repo.GetLatestByUserID(ctx, "u1")
+	require.NoError(t, err)
+	require.Equal(t, newer.ID, got.ID)
+
+	require.NoError(t, repo.SoftDelete(ctx, newer.ID))
+	got, err = repo.GetLatestByUserID(ctx, "u1")
+	require.NoError(t, err)
+	require.Equal(t, older.ID, got.ID, "soft-deleted row must be skipped")
+
+	_, err = repo.GetLatestByUserID(ctx, "ghost")
+	require.ErrorIs(t, err, domain.ErrAvatarNotFound)
+}
+
 func TestAvatarRepository_SoftDelete_SecondCallReturnsNotFound(t *testing.T) {
 	truncate(t)
 	ctx := context.Background()

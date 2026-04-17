@@ -83,6 +83,14 @@ ORDER BY created_at DESC`
 	return out, nil
 }
 
+func (r *AvatarRepository) GetLatestByUserID(ctx context.Context, userID string) (*domain.Avatar, error) {
+	q := `SELECT ` + avatarColumns + ` FROM avatars
+WHERE user_id = $1 AND deleted_at IS NULL
+ORDER BY created_at DESC
+LIMIT 1`
+	return scanAvatar(r.pool.QueryRow(ctx, q, userID))
+}
+
 func (r *AvatarRepository) SoftDelete(ctx context.Context, id uuid.UUID) error {
 	const q = `UPDATE avatars SET deleted_at = NOW(), updated_at = NOW()
 WHERE id = $1 AND deleted_at IS NULL`

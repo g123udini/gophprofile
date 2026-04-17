@@ -19,6 +19,7 @@ type fakeRepo struct {
 	createFn     func(ctx context.Context, a *domain.Avatar) error
 	getFn        func(ctx context.Context, id uuid.UUID) (*domain.Avatar, error)
 	listFn       func(ctx context.Context, userID string) ([]*domain.Avatar, error)
+	latestFn     func(ctx context.Context, userID string) (*domain.Avatar, error)
 	softDeleteFn func(ctx context.Context, id uuid.UUID) error
 	lastAvatar   *domain.Avatar
 	calls        int
@@ -45,6 +46,13 @@ func (f *fakeRepo) ListByUserID(ctx context.Context, userID string) ([]*domain.A
 		return f.listFn(ctx, userID)
 	}
 	return nil, nil
+}
+
+func (f *fakeRepo) GetLatestByUserID(ctx context.Context, userID string) (*domain.Avatar, error) {
+	if f.latestFn != nil {
+		return f.latestFn(ctx, userID)
+	}
+	return nil, domain.ErrAvatarNotFound
 }
 
 func (f *fakeRepo) SoftDelete(ctx context.Context, id uuid.UUID) error {
@@ -234,11 +242,10 @@ func TestAvatarService_Get_DelegatesToRepo(t *testing.T) {
 	require.Same(t, want, got)
 }
 
-func TestAvatarService_GetLatestForUser_ReturnsFirst(t *testing.T) {
+func TestAvatarService_GetLatestForUser_ReturnsLatest(t *testing.T) {
 	a := &domain.Avatar{ID: uuid.New(), UserID: "u1", FileName: "new.jpg"}
-	b := &domain.Avatar{ID: uuid.New(), UserID: "u1", FileName: "old.jpg"}
-	repo := &fakeRepo{listFn: func(ctx context.Context, _ string) ([]*domain.Avatar, error) {
-		return []*domain.Avatar{a, b}, nil
+	repo := &fakeRepo{latestFn: func(ctx context.Context, _ string) (*domain.Avatar, error) {
+		return a, nil
 	}}
 	svc := NewAvatarService(repo, &fakeStorage{}, &fakePublisher{})
 
@@ -248,8 +255,8 @@ func TestAvatarService_GetLatestForUser_ReturnsFirst(t *testing.T) {
 }
 
 func TestAvatarService_GetLatestForUser_Empty(t *testing.T) {
-	repo := &fakeRepo{listFn: func(ctx context.Context, _ string) ([]*domain.Avatar, error) {
-		return nil, nil
+	repo := &fakeRepo{latestFn: func(ctx context.Context, _ string) (*domain.Avatar, error) {
+		return nil, domain.ErrAvatarNotFound
 	}}
 	svc := NewAvatarService(repo, &fakeStorage{}, &fakePublisher{})
 

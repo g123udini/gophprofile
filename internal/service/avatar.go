@@ -38,6 +38,7 @@ type avatarRepo interface {
 	Create(ctx context.Context, a *domain.Avatar) error
 	GetByID(ctx context.Context, id uuid.UUID) (*domain.Avatar, error)
 	ListByUserID(ctx context.Context, userID string) ([]*domain.Avatar, error)
+	GetLatestByUserID(ctx context.Context, userID string) (*domain.Avatar, error)
 	SoftDelete(ctx context.Context, id uuid.UUID) error
 }
 
@@ -128,14 +129,7 @@ func (s *AvatarService) ListForUser(ctx context.Context, userID string) ([]*doma
 }
 
 func (s *AvatarService) GetLatestForUser(ctx context.Context, userID string) (*domain.Avatar, error) {
-	list, err := s.repo.ListByUserID(ctx, userID)
-	if err != nil {
-		return nil, err
-	}
-	if len(list) == 0 {
-		return nil, domain.ErrAvatarNotFound
-	}
-	return list[0], nil
+	return s.repo.GetLatestByUserID(ctx, userID)
 }
 
 // OpenContent returns a stream for the avatar's original or thumbnail. The
