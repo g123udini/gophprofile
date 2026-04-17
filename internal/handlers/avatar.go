@@ -222,7 +222,7 @@ func (h *AvatarHandler) streamAvatar(w http.ResponseWriter, r *http.Request, id 
 	if sz > 0 {
 		w.Header().Set("Content-Length", strconv.FormatInt(sz, 10))
 	}
-	w.Header().Set("Cache-Control", "private, max-age=0")
+	w.Header().Set("Cache-Control", "public, max-age=86400")
 	if _, err := io.Copy(w, rc); err != nil {
 		slog.Warn("stream avatar to client interrupted", "err", err)
 	}
