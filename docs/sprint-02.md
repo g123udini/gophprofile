@@ -175,7 +175,7 @@ groups:
 
 ## План реализации (этапы)
 
-Спринт разбит на этапы. После каждого — ревью и маленький коммит.
+Спринт разбит на этапы.
 
 ### Этап 1. Observability infra в docker-compose
 
@@ -186,7 +186,6 @@ groups:
   - `loki/loki-config.yaml`, `promtail/promtail-config.yaml`
   - `grafana/provisioning/datasources/*.yml` — Prometheus, Jaeger, Loki как datasource'ы
 - Убедиться, что всё поднимается и UI доступны: Grafana `:3000`, Prometheus `:9090`, Jaeger `:16686`
-- Коммит: `chore(obs): bring up prometheus, jaeger, grafana, loki in compose`
 
 ### Этап 2. Структурированное логирование
 
@@ -194,7 +193,6 @@ groups:
 - Middleware `request_id`: генерит UUID, кладёт в context и header ответа
 - Базовый логгер с полями `service`, `version` пробрасывается через ctx
 - Promtail собирает stdout контейнеров, логи видны в Grafana Explore → Loki
-- Коммит: `feat(obs): json slog logger with request id and loki pipeline`
 
 ### Этап 3. Метрики Prometheus
 
@@ -203,7 +201,6 @@ groups:
 - Бизнес-метрики: `avatars_uploads_total`, `avatars_upload_duration_seconds`, `avatars_storage_bytes`, `avatar_processing_status_total{status}`
 - Инфра-метрики: `db_connections_in_use` через `pgxpool.Stat()`, `rabbit_consumer_prefetch`
 - Endpoint `/metrics` на server и worker, `pprof` — опционально
-- Коммит: `feat(obs): expose prometheus metrics for http, business and infra`
 
 ### Этап 4. Трейсинг через OpenTelemetry
 
@@ -213,7 +210,6 @@ groups:
 - Обёртки над minio-go методами с ручными spans (нет готового otel-пакета — делаем сами)
 - RabbitMQ: в publisher добавляем headers с `traceparent`, в consumer извлекаем и продолжаем trace
 - Коррелируем логи: в JSON handler добавить hook, который читает `trace_id`/`span_id` из ctx и кладёт их в запись
-- Коммит: `feat(obs): distributed tracing across http, pgx, s3 and rabbitmq`
 
 ### Этап 5. Дашборды Grafana
 
@@ -221,14 +217,12 @@ groups:
 - Dashboard `service-overview.json`: RED по HTTP, uptime, версии
 - Dashboard `business-kpi.json`: uploads/min, processing status breakdown, средний размер, storage usage
 - Сделать скриншоты и добавить в `docs/sprint-02-screenshots/` (опционально, для защиты)
-- Коммит: `feat(obs): grafana dashboards for service overview and business kpi`
 
 ### Этап 6. Бонус — Alertmanager
 
 - Добавить `alertmanager` в compose
 - Правила в `observability/prometheus/alerts.yml`: HighErrorRate, HighResponseTime, WorkerQueueBacklog
 - Ресивер — stdout или webhook в httpbin для демонстрации
-- Коммит: `feat(obs): alertmanager with high error rate and latency alerts`
 
 ---
 
