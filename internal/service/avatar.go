@@ -8,11 +8,13 @@ import (
 	"log/slog"
 	"path"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 
 	"gophprofile/internal/domain"
 	"gophprofile/internal/events"
+	"gophprofile/internal/metrics"
 )
 
 var (
@@ -70,7 +72,14 @@ type UploadInput struct {
 	Content     io.Reader
 }
 
-func (s *AvatarService) Upload(ctx context.Context, in UploadInput) (*domain.Avatar, error) {
+func (s *AvatarService) Upload(ctx context.Context, in UploadInput) (avatar *domain.Avatar, err error) {
+	start := time.Now()
+	defer func() {
+		status := uploadStatusLabel(err)
+		metrics.AvatarUploadsTotal.WithLabelValues(status).Inc()
+		metrics.AvatarUploadDuration.WithLabelValues(status).Observe(time.Since(start).Seconds())
+	}()
+
 	if in.UserID == "" {
 		return nil, ErrEmptyUserID
 	}
@@ -86,7 +95,7 @@ func (s *AvatarService) Upload(ctx context.Context, in UploadInput) (*domain.Ava
 		return nil, fmt.Errorf("upload: put object: %w", err)
 	}
 
-	avatar := &domain.Avatar{
+	avatar = &domain.Avatar{
 		ID:               id,
 		UserID:           in.UserID,
 		FileName:         in.FileName,
@@ -105,6 +114,8 @@ func (s *AvatarService) Upload(ctx context.Context, in UploadInput) (*domain.Ava
 		return nil, fmt.Errorf("upload: create avatar: %w", err)
 	}
 
+	metrics.AvatarStorageBytes.Add(float64(in.Size))
+
 	// Broker failures leave the avatar in processing_status=pending forever.
 	// Acceptable for the sprint-01 MVP; a proper fix is the outbox pattern
 	// in sprint-03.
@@ -118,6 +129,19 @@ func (s *AvatarService) Upload(ctx context.Context, in UploadInput) (*domain.Ava
 	}
 
 	return avatar, nil
+}
+
+// uploadStatusLabel maps an Upload return error to a low-cardinality metric
+// label. Unknown errors map to internal_error so we can alert on the bucket.
+func uploadStatusLabel(err error) string {
+	switch {
+	case err == nil:
+		return metrics.UploadStatusSuccess
+	case errors.Is(err, ErrInvalidContentType), errors.Is(err, ErrEmptyUserID):
+		return metrics.UploadStatusBadRequest
+	default:
+		return metrics.UploadStatusInternalError
+	}
 }
 
 func (s *AvatarService) Get(ctx context.Context, id uuid.UUID) (*domain.Avatar, error) {
@@ -202,6 +226,7 @@ func (s *AvatarService) Delete(ctx context.Context, id uuid.UUID, actingUserID s
 	if err := s.repo.SoftDelete(ctx, id); err != nil {
 		return err
 	}
+	metrics.AvatarStorageBytes.Sub(float64(avatar.SizeBytes))
 
 	// Best-effort cleanup of binary objects; errors only logged.
 	if err := s.storage.DeleteObject(ctx, avatar.S3Key); err != nil {

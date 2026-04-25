@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -12,14 +13,17 @@ import (
 	"gophprofile/internal/config"
 	"gophprofile/internal/events"
 	"gophprofile/internal/logging"
+	"gophprofile/internal/metrics"
 	"gophprofile/internal/repository/postgres"
 	"gophprofile/internal/repository/s3"
 	"gophprofile/internal/worker"
 )
 
 const (
-	queueName  = "avatars.processing"
-	routingKey = "avatar.uploaded"
+	queueName        = "avatars.processing"
+	routingKey       = "avatar.uploaded"
+	metricsAddr      = ":8081"
+	consumerPrefetch = 1
 )
 
 func main() {
@@ -39,6 +43,7 @@ func main() {
 		os.Exit(1)
 	}
 	defer pool.Close()
+	metrics.RegisterPgxPool(pool)
 	logger.Info("postgres pool ready")
 
 	s3Client, err := s3.NewClient(cfg.S3)
@@ -54,6 +59,7 @@ func main() {
 		os.Exit(1)
 	}
 	defer consumer.Close()
+	metrics.RabbitConsumerPrefetch.Set(consumerPrefetch)
 	logger.Info("rabbitmq consumer ready", "queue", queueName, "routing_key", routingKey)
 
 	repo := postgres.NewAvatarRepository(pool)
@@ -61,6 +67,26 @@ func main() {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+	metricsSrv := &http.Server{
+		Addr:              metricsAddr,
+		Handler:           metricsMux(),
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+	go func() {
+		logger.Info("metrics server starting", "addr", metricsAddr)
+		if err := metricsSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			logger.Error("metrics server failed", "err", err)
+			cancel()
+		}
+	}()
+	defer func() {
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer shutdownCancel()
+		if err := metricsSrv.Shutdown(shutdownCtx); err != nil {
+			logger.Error("metrics server shutdown failed", "err", err)
+		}
+	}()
 
 	go func() {
 		quit := make(chan os.Signal, 1)
@@ -80,4 +106,10 @@ func main() {
 		os.Exit(1)
 	}
 	logger.Info("worker stopped")
+}
+
+func metricsMux() http.Handler {
+	mux := http.NewServeMux()
+	mux.Handle("/metrics", metrics.Handler())
+	return mux
 }

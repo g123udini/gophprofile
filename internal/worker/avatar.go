@@ -16,6 +16,7 @@ import (
 
 	"gophprofile/internal/domain"
 	"gophprofile/internal/events"
+	"gophprofile/internal/metrics"
 )
 
 var thumbnailSizes = []struct {
@@ -64,6 +65,7 @@ func (p *AvatarProcessor) HandleUploaded(ctx context.Context, evt events.AvatarU
 		return fmt.Errorf("load processing status: %w", err)
 	}
 	if status == domain.ProcessingStatusCompleted {
+		metrics.AvatarProcessingStatusTotal.WithLabelValues(metrics.ProcessingStatusSkipped).Inc()
 		slog.InfoContext(ctx, "avatar already processed, skipping", "avatar_id", avatarID)
 		return nil
 	}
@@ -101,10 +103,12 @@ func (p *AvatarProcessor) HandleUploaded(ctx context.Context, evt events.AvatarU
 	if err := p.repo.UpdateProcessing(ctx, avatarID, domain.ProcessingStatusCompleted, thumbs); err != nil {
 		return fmt.Errorf("mark completed: %w", err)
 	}
+	metrics.AvatarProcessingStatusTotal.WithLabelValues(metrics.ProcessingStatusCompleted).Inc()
 	return nil
 }
 
 func (p *AvatarProcessor) markFailed(ctx context.Context, id uuid.UUID, stage string, cause error) {
+	metrics.AvatarProcessingStatusTotal.WithLabelValues(metrics.ProcessingStatusFailed).Inc()
 	if err := p.repo.UpdateProcessing(context.Background(), id, domain.ProcessingStatusFailed, nil); err != nil {
 		slog.ErrorContext(ctx, "mark processing failed", "err", err, "stage", stage, "avatar_id", id, "cause", cause)
 	}

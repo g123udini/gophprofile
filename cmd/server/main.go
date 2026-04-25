@@ -19,6 +19,7 @@ import (
 	"gophprofile/internal/config"
 	"gophprofile/internal/handlers"
 	"gophprofile/internal/logging"
+	"gophprofile/internal/metrics"
 	"gophprofile/internal/repository/postgres"
 	"gophprofile/internal/repository/s3"
 	"gophprofile/internal/service"
@@ -48,6 +49,7 @@ func main() {
 		os.Exit(1)
 	}
 	defer pool.Close()
+	metrics.RegisterPgxPool(pool)
 	logger.Info("postgres pool ready")
 
 	s3Client, err := s3.NewClient(cfg.S3)
@@ -80,8 +82,10 @@ func main() {
 	r.Use(apimw.RequestID)
 	r.Use(middleware.RealIP)
 	r.Use(middleware.Recoverer)
+	r.Use(apimw.Metrics)
 	r.Use(middleware.Timeout(30 * time.Second))
 
+	r.Handle("/metrics", metrics.Handler())
 	r.Get("/health", healthHandler(pool, s3Client, publisher))
 	r.Route("/api/v1", func(r chi.Router) {
 		r.Post("/avatars", avatarHandler.Upload)
