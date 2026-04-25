@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -15,9 +14,11 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	apimw "gophprofile/internal/api/middleware"
 	"gophprofile/internal/broker/rabbitmq"
 	"gophprofile/internal/config"
 	"gophprofile/internal/handlers"
+	"gophprofile/internal/logging"
 	"gophprofile/internal/repository/postgres"
 	"gophprofile/internal/repository/s3"
 	"gophprofile/internal/service"
@@ -25,8 +26,7 @@ import (
 )
 
 func main() {
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	slog.SetDefault(logger)
+	logger := logging.New("server", logging.Version())
 
 	cfg, err := config.Load()
 	if err != nil {
@@ -77,7 +77,7 @@ func main() {
 	avatarHandler := handlers.NewAvatarHandler(avatarSvc)
 
 	r := chi.NewRouter()
-	r.Use(middleware.RequestID)
+	r.Use(apimw.RequestID)
 	r.Use(middleware.RealIP)
 	r.Use(middleware.Recoverer)
 	r.Use(middleware.Timeout(30 * time.Second))

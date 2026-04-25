@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"errors"
-	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
@@ -12,6 +11,7 @@ import (
 	"gophprofile/internal/broker/rabbitmq"
 	"gophprofile/internal/config"
 	"gophprofile/internal/events"
+	"gophprofile/internal/logging"
 	"gophprofile/internal/repository/postgres"
 	"gophprofile/internal/repository/s3"
 	"gophprofile/internal/worker"
@@ -23,8 +23,7 @@ const (
 )
 
 func main() {
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	slog.SetDefault(logger)
+	logger := logging.New("worker", logging.Version())
 
 	cfg, err := config.Load()
 	if err != nil {
@@ -73,7 +72,7 @@ func main() {
 
 	logger.Info("worker starting")
 	err = consumer.Run(ctx, func(ctx context.Context, evt events.AvatarUploadedEvent) error {
-		logger.Info("processing avatar", "avatar_id", evt.AvatarID, "user_id", evt.UserID)
+		logger.InfoContext(ctx, "processing avatar", "avatar_id", evt.AvatarID, "user_id", evt.UserID)
 		return processor.HandleUploaded(ctx, evt)
 	})
 	if err != nil && !errors.Is(err, context.Canceled) {

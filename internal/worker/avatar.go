@@ -58,13 +58,13 @@ func (p *AvatarProcessor) HandleUploaded(ctx context.Context, evt events.AvatarU
 	status, err := p.repo.GetProcessingStatus(ctx, avatarID)
 	if err != nil {
 		if errors.Is(err, domain.ErrAvatarNotFound) {
-			slog.Warn("avatar not found, skipping", "avatar_id", avatarID)
+			slog.WarnContext(ctx, "avatar not found, skipping", "avatar_id", avatarID)
 			return nil
 		}
 		return fmt.Errorf("load processing status: %w", err)
 	}
 	if status == domain.ProcessingStatusCompleted {
-		slog.Info("avatar already processed, skipping", "avatar_id", avatarID)
+		slog.InfoContext(ctx, "avatar already processed, skipping", "avatar_id", avatarID)
 		return nil
 	}
 
@@ -106,6 +106,6 @@ func (p *AvatarProcessor) HandleUploaded(ctx context.Context, evt events.AvatarU
 
 func (p *AvatarProcessor) markFailed(ctx context.Context, id uuid.UUID, stage string, cause error) {
 	if err := p.repo.UpdateProcessing(context.Background(), id, domain.ProcessingStatusFailed, nil); err != nil {
-		slog.Error("mark processing failed", "err", err, "stage", stage, "avatar_id", id, "cause", cause)
+		slog.ErrorContext(ctx, "mark processing failed", "err", err, "stage", stage, "avatar_id", id, "cause", cause)
 	}
 }

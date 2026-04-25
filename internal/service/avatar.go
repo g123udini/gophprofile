@@ -99,7 +99,7 @@ func (s *AvatarService) Upload(ctx context.Context, in UploadInput) (*domain.Ava
 
 	if err := s.repo.Create(ctx, avatar); err != nil {
 		if delErr := s.storage.DeleteObject(context.Background(), key); delErr != nil {
-			slog.Error("rollback: delete orphaned s3 object",
+			slog.ErrorContext(ctx, "rollback: delete orphaned s3 object",
 				"key", key, "err", delErr, "original_err", err)
 		}
 		return nil, fmt.Errorf("upload: create avatar: %w", err)
@@ -113,7 +113,7 @@ func (s *AvatarService) Upload(ctx context.Context, in UploadInput) (*domain.Ava
 		UserID:   avatar.UserID,
 		S3Key:    avatar.S3Key,
 	}); err != nil {
-		slog.Warn("publish avatar.uploaded failed; avatar will stay pending",
+		slog.WarnContext(ctx, "publish avatar.uploaded failed; avatar will stay pending",
 			"err", err, "avatar_id", avatar.ID)
 	}
 
@@ -205,11 +205,11 @@ func (s *AvatarService) Delete(ctx context.Context, id uuid.UUID, actingUserID s
 
 	// Best-effort cleanup of binary objects; errors only logged.
 	if err := s.storage.DeleteObject(ctx, avatar.S3Key); err != nil {
-		slog.Warn("delete original from s3", "err", err, "key", avatar.S3Key)
+		slog.WarnContext(ctx, "delete original from s3", "err", err, "key", avatar.S3Key)
 	}
 	for _, key := range avatar.ThumbnailS3Keys {
 		if err := s.storage.DeleteObject(ctx, key); err != nil {
-			slog.Warn("delete thumbnail from s3", "err", err, "key", key)
+			slog.WarnContext(ctx, "delete thumbnail from s3", "err", err, "key", key)
 		}
 	}
 	return nil
