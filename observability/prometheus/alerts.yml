@@ -1,0 +1,55 @@
+groups:
+  - name: gophprofile-availability
+    rules:
+      - alert: ServiceDown
+        expr: up{job=~"gophprofile-(server|worker)"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.job }} target is down"
+          description: "Prometheus has been unable to scrape {{ $labels.job }} for over 1 minute."
+
+  - name: gophprofile-http
+    rules:
+      - alert: HighErrorRate
+        # 5xx share over 5m. clamp_min keeps the ratio defined when traffic is zero.
+        expr: |
+          sum(rate(http_requests_total{status=~"5.."}[5m]))
+            / clamp_min(sum(rate(http_requests_total[5m])), 1e-9)
+            > 0.05
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Server 5xx rate above 5%"
+          description: "Server 5xx error share has exceeded 5% for the last 5 minutes."
+
+      - alert: HighLatency
+        expr: |
+          histogram_quantile(0.95,
+            sum by (le) (rate(http_request_duration_seconds_bucket[5m]))
+          ) > 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Server p95 latency above 1s"
+          description: "p95 of http_request_duration_seconds has been above 1s for 5 minutes."
+
+  - name: gophprofile-worker
+    rules:
+      # No direct queue-depth gauge; the spec's WorkerQueueBacklog stand-in is
+      # processing failure share — same operator signal: messages are arriving
+      # but not being completed.
+      - alert: HighProcessingFailures
+        expr: |
+          sum(rate(avatar_processing_status_total{status="failed"}[5m]))
+            / clamp_min(sum(rate(avatar_processing_status_total[5m])), 1e-9)
+            > 0.2
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Worker processing failure share above 20%"
+          description: "More than 20% of avatar processing attempts have failed for the last 5 minutes."

@@ -1,0 +1,17 @@
+global:
+  resolve_timeout: 5m
+
+route:
+  receiver: demo-webhook
+  group_by: ['alertname']
+  group_wait: 10s
+  group_interval: 30s
+  repeat_interval: 1h
+
+receivers:
+  # httpbin echoes the POST back; check it via the alertmanager UI or
+  # `docker compose logs alertmanager` to confirm fan-out works end-to-end.
+  - name: demo-webhook
+    webhook_configs:
+      - url: http://httpbin:80/anything/alertmanager
+        send_resolved: true
