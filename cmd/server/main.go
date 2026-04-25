@@ -13,6 +13,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 
 	apimw "gophprofile/internal/api/middleware"
 	"gophprofile/internal/broker/rabbitmq"
@@ -20,6 +21,7 @@ import (
 	"gophprofile/internal/handlers"
 	"gophprofile/internal/logging"
 	"gophprofile/internal/metrics"
+	"gophprofile/internal/observability/tracing"
 	"gophprofile/internal/repository/postgres"
 	"gophprofile/internal/repository/s3"
 	"gophprofile/internal/service"
@@ -34,6 +36,21 @@ func main() {
 		logger.Error("failed to load config", "err", err)
 		os.Exit(1)
 	}
+
+	tracingCtx, tracingCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	shutdownTracing, err := tracing.Init(tracingCtx, "gophprofile-server", logging.Version(), cfg.OTel.Endpoint, cfg.OTel.Insecure)
+	tracingCancel()
+	if err != nil {
+		logger.Error("failed to init tracing", "err", err)
+		os.Exit(1)
+	}
+	defer func() {
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer shutdownCancel()
+		if err := shutdownTracing(shutdownCtx); err != nil {
+			logger.Error("tracing shutdown failed", "err", err)
+		}
+	}()
 
 	if err := postgres.Migrate(cfg.Postgres.DSN, migrations.FS); err != nil {
 		logger.Error("failed to apply migrations", "err", err)
@@ -79,6 +96,9 @@ func main() {
 	avatarHandler := handlers.NewAvatarHandler(avatarSvc)
 
 	r := chi.NewRouter()
+	// otelhttp must run before our own middlewares so trace_id is on ctx
+	// when RequestID/Metrics/handlers log or emit child spans.
+	r.Use(otelMiddleware("server"))
 	r.Use(apimw.RequestID)
 	r.Use(middleware.RealIP)
 	r.Use(middleware.Recoverer)
@@ -131,6 +151,22 @@ func main() {
 		logger.Error("graceful shutdown failed", "err", err)
 	}
 	logger.Info("server stopped")
+}
+
+// otelMiddleware wraps each handler in an otelhttp span. Span name is the chi
+// route pattern when available, falling back to the request method so we don't
+// leak high-cardinality URLs (e.g. avatar UUIDs) into the trace UI.
+func otelMiddleware(service string) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return otelhttp.NewHandler(next, service,
+			otelhttp.WithSpanNameFormatter(func(_ string, r *http.Request) string {
+				if rc := chi.RouteContext(r.Context()); rc != nil && rc.RoutePattern() != "" {
+					return r.Method + " " + rc.RoutePattern()
+				}
+				return r.Method
+			}),
+		)
+	}
 }
 
 func healthHandler(pool *pgxpool.Pool, s3Client *s3.Client, publisher *rabbitmq.Publisher) http.HandlerFunc {

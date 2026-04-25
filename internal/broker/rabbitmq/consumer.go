@@ -9,6 +9,10 @@ import (
 	"time"
 
 	amqp "github.com/rabbitmq/amqp091-go"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 
 	"gophprofile/internal/events"
 	"gophprofile/internal/logging"
@@ -203,11 +207,27 @@ func (c *Consumer) reconnectWithBackoff(ctx context.Context) error {
 }
 
 func (c *Consumer) handleDelivery(ctx context.Context, handler AvatarUploadedHandler, msg amqp.Delivery) {
+	// Restore the upstream trace from AMQP headers before opening our own span,
+	// so the consumer span links to the producer's span across services.
+	ctx = extractContext(ctx, msg.Headers)
+	ctx, span := otel.Tracer(tracerName).Start(ctx, "rabbitmq.consume",
+		trace.WithSpanKind(trace.SpanKindConsumer),
+		trace.WithAttributes(
+			attribute.String("messaging.system", "rabbitmq"),
+			attribute.String("messaging.source", c.queue),
+			attribute.String("messaging.rabbitmq.routing_key", c.routingKey),
+			attribute.String("messaging.message_id", msg.MessageId),
+		),
+	)
+	defer span.End()
+
 	msgCtx := logging.WithMessageID(ctx, msg.MessageId)
 
 	var evt events.AvatarUploadedEvent
 	if err := json.Unmarshal(msg.Body, &evt); err != nil {
 		// Malformed payload is a poison message — retrying won't help.
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "decode failed")
 		slog.ErrorContext(msgCtx, "decode delivery, dropping", "err", err)
 		_ = msg.Nack(false, false)
 		return
@@ -244,6 +264,8 @@ func (c *Consumer) handleDelivery(ctx context.Context, handler AvatarUploadedHan
 		}
 	}
 
+	span.RecordError(lastErr)
+	span.SetStatus(codes.Error, "exhausted retries")
 	slog.ErrorContext(msgCtx, "handler exhausted retries, dropping",
 		"err", lastErr, "attempts", c.maxRetryAttempts,
 		"avatar_id", evt.AvatarID)

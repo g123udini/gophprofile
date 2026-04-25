@@ -12,6 +12,9 @@ import (
 	amqp "github.com/rabbitmq/amqp091-go"
 	"github.com/stretchr/testify/require"
 	tcrabbit "github.com/testcontainers/testcontainers-go/modules/rabbitmq"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/sdk/trace"
 
 	"gophprofile/internal/broker/rabbitmq"
 	"gophprofile/internal/events"
@@ -281,6 +284,34 @@ func waitForID(t *testing.T, c <-chan string, want string, timeout time.Duration
 		case <-deadline:
 			t.Fatalf("did not receive %q within %s", want, timeout)
 		}
+	}
+}
+
+func TestPublisher_PropagatesTraceparentInHeaders(t *testing.T) {
+	otel.SetTextMapPropagator(propagation.TraceContext{})
+	tp := trace.NewTracerProvider()
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+	otel.SetTracerProvider(tp)
+
+	deliveries := bindTestQueue(t, events.RoutingKeyAvatarUploaded)
+	p := newPublisher(t)
+
+	ctx, span := tp.Tracer("test").Start(context.Background(), "publish")
+	wantTraceID := span.SpanContext().TraceID().String()
+
+	require.NoError(t, p.PublishAvatarUploaded(ctx, events.AvatarUploadedEvent{
+		AvatarID: "trace-test", UserID: "u", S3Key: "k",
+	}))
+	span.End()
+
+	select {
+	case msg := <-deliveries:
+		tp, ok := msg.Headers["traceparent"].(string)
+		require.True(t, ok, "traceparent header missing on delivery")
+		// W3C traceparent format: "00-<trace_id>-<span_id>-<flags>"
+		require.Contains(t, tp, wantTraceID)
+	case <-time.After(3 * time.Second):
+		t.Fatal("no delivery received within 3s")
 	}
 }
 

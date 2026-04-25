@@ -14,6 +14,7 @@ import (
 	"gophprofile/internal/events"
 	"gophprofile/internal/logging"
 	"gophprofile/internal/metrics"
+	"gophprofile/internal/observability/tracing"
 	"gophprofile/internal/repository/postgres"
 	"gophprofile/internal/repository/s3"
 	"gophprofile/internal/worker"
@@ -34,6 +35,21 @@ func main() {
 		logger.Error("failed to load config", "err", err)
 		os.Exit(1)
 	}
+
+	tracingCtx, tracingCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	shutdownTracing, err := tracing.Init(tracingCtx, "gophprofile-worker", logging.Version(), cfg.OTel.Endpoint, cfg.OTel.Insecure)
+	tracingCancel()
+	if err != nil {
+		logger.Error("failed to init tracing", "err", err)
+		os.Exit(1)
+	}
+	defer func() {
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer shutdownCancel()
+		if err := shutdownTracing(shutdownCtx); err != nil {
+			logger.Error("tracing shutdown failed", "err", err)
+		}
+	}()
 
 	poolCtx, poolCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	pool, err := postgres.NewPool(poolCtx, cfg.Postgres.DSN)

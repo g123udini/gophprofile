@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/otel/sdk/trace"
 )
 
 func TestNewLoggerTagsServiceAndVersion(t *testing.T) {
@@ -59,6 +60,22 @@ func TestContextHandlerOmitsAttrsWhenNotSet(t *testing.T) {
 func TestWithRequestIDIgnoresEmpty(t *testing.T) {
 	ctx := WithRequestID(context.Background(), "")
 	require.Empty(t, RequestIDFromContext(ctx))
+}
+
+func TestContextHandlerInjectsTraceFields(t *testing.T) {
+	var buf bytes.Buffer
+	logger := NewWithWriter(&buf, "server", "dev")
+
+	tp := trace.NewTracerProvider()
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+	ctx, span := tp.Tracer("test").Start(context.Background(), "op")
+	defer span.End()
+
+	logger.InfoContext(ctx, "with span")
+
+	rec := decode(t, buf)
+	require.Equal(t, span.SpanContext().TraceID().String(), rec["trace_id"])
+	require.Equal(t, span.SpanContext().SpanID().String(), rec["span_id"])
 }
 
 func decode(t *testing.T, buf bytes.Buffer) map[string]any {

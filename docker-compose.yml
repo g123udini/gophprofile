@@ -66,6 +66,8 @@ services:
       S3_BUCKET: "avatars"
       RABBIT_URL: "amqp://guest:guest@rabbitmq:5672/"
       RABBIT_EXCHANGE: "avatars.exchange"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "otel-collector:4317"
+      OTEL_EXPORTER_OTLP_INSECURE: "true"
     ports:
       - "8080:8080"
     depends_on:
@@ -75,6 +77,8 @@ services:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
+      otel-collector:
+        condition: service_started
 
   worker:
     build:
@@ -90,6 +94,8 @@ services:
       S3_BUCKET: "avatars"
       RABBIT_URL: "amqp://guest:guest@rabbitmq:5672/"
       RABBIT_EXCHANGE: "avatars.exchange"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "otel-collector:4317"
+      OTEL_EXPORTER_OTLP_INSECURE: "true"
     depends_on:
       postgres:
         condition: service_healthy
@@ -97,6 +103,8 @@ services:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
+      otel-collector:
+        condition: service_started
 
   jaeger:
     image: jaegertracing/all-in-one:1.62.0
