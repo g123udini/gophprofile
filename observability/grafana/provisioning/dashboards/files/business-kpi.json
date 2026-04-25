@@ -1,0 +1,116 @@
+{
+  "uid": "gophprofile-business-kpi",
+  "title": "GophProfile — Business KPI",
+  "tags": ["gophprofile", "business"],
+  "schemaVersion": 39,
+  "timezone": "browser",
+  "refresh": "30s",
+  "time": { "from": "now-6h", "to": "now" },
+  "templating": { "list": [] },
+  "annotations": { "list": [] },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Uploads per minute by status",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "60 * sum by (status) (rate(avatars_uploads_total[5m]))",
+          "legendFormat": "{{status}}"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "/min" }, "overrides": [] }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Total uploads (since boot) by status",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (status) (avatars_uploads_total)",
+          "legendFormat": "{{status}}"
+        }
+      ],
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value" }
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Upload duration p95 by status (s)",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum by (le, status) (rate(avatars_upload_duration_seconds_bucket[5m])))",
+          "legendFormat": "{{status}}"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] }
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Worker processing outcomes",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (status) (rate(avatar_processing_status_total[5m]))",
+          "legendFormat": "{{status}}"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "ops" }, "overrides": [] }
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "Storage used (in-process gauge)",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "refId": "A", "expr": "avatars_storage_bytes", "legendFormat": "bytes" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "bytes" }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "graphMode": "area" }
+    },
+    {
+      "id": 6,
+      "type": "stat",
+      "title": "Failed processing share (5m)",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(avatar_processing_status_total{status=\"failed\"}[5m])) / clamp_min(sum(rate(avatar_processing_status_total[5m])), 1e-9)",
+          "legendFormat": "failed share"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 0.05 },
+              { "color": "red", "value": 0.2 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background" }
+    }
+  ]
+}

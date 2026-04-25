@@ -1,0 +1,15 @@
+apiVersion: 1
+
+providers:
+  - name: gophprofile
+    orgId: 1
+    folder: ''
+    type: file
+    disableDeletion: true
+    updateIntervalSeconds: 30
+    allowUiUpdates: false
+    options:
+      # files/ keeps JSON dashboards separate from this provider yaml so
+      # grafana's loader doesn't try to parse this file as a dashboard.
+      path: /etc/grafana/provisioning/dashboards/files
+      foldersFromFilesStructure: false
