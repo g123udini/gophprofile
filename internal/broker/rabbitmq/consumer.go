@@ -38,6 +38,8 @@ type Consumer struct {
 	maxRetryAttempts    int
 	initialRetryBackoff time.Duration
 	reconnectBackoff    time.Duration
+
+	tracer trace.Tracer
 }
 
 type ConsumerOption func(*Consumer)
@@ -70,6 +72,7 @@ func NewConsumer(url, exchange, queue, routingKey string, opts ...ConsumerOption
 		maxRetryAttempts:    defaultMaxRetryAttempts,
 		initialRetryBackoff: defaultInitialRetryBackoff,
 		reconnectBackoff:    defaultReconnectBackoff,
+		tracer:              otel.Tracer(tracerName),
 	}
 	for _, opt := range opts {
 		opt(c)
@@ -210,7 +213,7 @@ func (c *Consumer) handleDelivery(ctx context.Context, handler AvatarUploadedHan
 	// Restore the upstream trace from AMQP headers before opening our own span,
 	// so the consumer span links to the producer's span across services.
 	ctx = extractContext(ctx, msg.Headers)
-	ctx, span := otel.Tracer(tracerName).Start(ctx, "rabbitmq.consume",
+	ctx, span := c.tracer.Start(ctx, "rabbitmq.consume",
 		trace.WithSpanKind(trace.SpanKindConsumer),
 		trace.WithAttributes(
 			attribute.String("messaging.system", "rabbitmq"),
