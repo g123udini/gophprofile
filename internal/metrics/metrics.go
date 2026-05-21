@@ -90,8 +90,8 @@ func init() {
 // RegisterPgxPool wires gauges that read from pool.Stat() on each scrape.
 // Idempotency: this MustRegisters; calling twice will panic — call once per
 // process from main.
-func RegisterPgxPool(pool *pgxpool.Pool) {
-	prometheus.MustRegister(
+func RegisterPgxPool(pool *pgxpool.Pool) error {
+	gauges := []prometheus.Collector{
 		prometheus.NewGaugeFunc(prometheus.GaugeOpts{
 			Name: "db_connections_acquired",
 			Help: "Number of postgres connections currently checked out from the pool.",
@@ -104,7 +104,13 @@ func RegisterPgxPool(pool *pgxpool.Pool) {
 			Name: "db_connections_total",
 			Help: "Total open postgres connections (acquired + idle).",
 		}, func() float64 { return float64(pool.Stat().TotalConns()) }),
-	)
+	}
+	for _, g := range gauges {
+		if err := prometheus.Register(g); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Handler returns the http.Handler that serves /metrics in Prometheus format.
