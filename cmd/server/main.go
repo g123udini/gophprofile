@@ -76,7 +76,9 @@ func run(logger *slog.Logger) error {
 		return fmt.Errorf("connect to postgres: %w", err)
 	}
 	defer pool.Close()
-	metrics.RegisterPgxPool(pool)
+	if err := metrics.RegisterPgxPool(pool); err != nil {
+		return fmt.Errorf("register pgx pool metrics: %w", err)
+	}
 	logger.Info("postgres pool ready")
 
 	s3Client, err := s3.NewClient(cfg.S3)
