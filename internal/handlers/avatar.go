@@ -101,7 +101,7 @@ func (h *AvatarHandler) Upload(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, service.ErrEmptyUserID):
 			writeError(w, http.StatusBadRequest, "X-User-ID header is required", "")
 		default:
-			slog.Error("avatar upload failed", "err", err, "user_id", userID)
+			slog.ErrorContext(r.Context(), "avatar upload failed", "err", err, "user_id", userID)
 			writeError(w, http.StatusInternalServerError, "Internal error", "")
 		}
 		return
@@ -133,7 +133,7 @@ func (h *AvatarHandler) GetUserLatest(w http.ResponseWriter, r *http.Request) {
 	}
 	avatar, err := h.svc.GetLatestForUser(r.Context(), userID)
 	if err != nil {
-		writeServiceError(w, err, "user latest avatar")
+		writeServiceError(r.Context(), w, err, "user latest avatar")
 		return
 	}
 	h.streamAvatar(w, r, avatar.ID, r.URL.Query().Get("size"))
@@ -147,7 +147,7 @@ func (h *AvatarHandler) GetMetadata(w http.ResponseWriter, r *http.Request) {
 	}
 	avatar, err := h.svc.Get(r.Context(), id)
 	if err != nil {
-		writeServiceError(w, err, "get metadata")
+		writeServiceError(r.Context(), w, err, "get metadata")
 		return
 	}
 	writeJSON(w, http.StatusOK, toMetadata(avatar))
@@ -171,7 +171,7 @@ func (h *AvatarHandler) ListUserAvatars(w http.ResponseWriter, r *http.Request) 
 	}
 	list, err := h.svc.ListForUser(r.Context(), userID, limit, offset)
 	if err != nil {
-		writeServiceError(w, err, "list user avatars")
+		writeServiceError(r.Context(), w, err, "list user avatars")
 		return
 	}
 	out := make([]metadataResponse, 0, len(list))
@@ -201,7 +201,7 @@ func (h *AvatarHandler) Delete(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusForbidden, "Forbidden",
 				"You can only delete your own avatars")
 		default:
-			slog.Error("avatar delete failed", "err", err, "avatar_id", id)
+			slog.ErrorContext(r.Context(), "avatar delete failed", "err", err, "avatar_id", id)
 			writeError(w, http.StatusInternalServerError, "Internal error", "")
 		}
 		return
@@ -219,7 +219,7 @@ func (h *AvatarHandler) streamAvatar(w http.ResponseWriter, r *http.Request, id 
 			writeError(w, http.StatusBadRequest, "Unknown size",
 				"supported: 100x100, 300x300, original")
 		default:
-			slog.Error("open avatar content failed", "err", err, "avatar_id", id)
+			slog.ErrorContext(r.Context(), "open avatar content failed", "err", err, "avatar_id", id)
 			writeError(w, http.StatusInternalServerError, "Internal error", "")
 		}
 		return
@@ -234,7 +234,7 @@ func (h *AvatarHandler) streamAvatar(w http.ResponseWriter, r *http.Request, id 
 	}
 	w.Header().Set("Cache-Control", "public, max-age=86400")
 	if _, err := io.Copy(w, rc); err != nil {
-		slog.Warn("stream avatar to client interrupted", "err", err)
+		slog.WarnContext(r.Context(), "stream avatar to client interrupted", "err", err)
 	}
 }
 
@@ -289,12 +289,12 @@ func parseNonNegativeIntQuery(r *http.Request, key string) (int, error) {
 	return n, nil
 }
 
-func writeServiceError(w http.ResponseWriter, err error, op string) {
+func writeServiceError(ctx context.Context, w http.ResponseWriter, err error, op string) {
 	switch {
 	case errors.Is(err, domain.ErrAvatarNotFound):
 		writeError(w, http.StatusNotFound, "Avatar not found", "")
 	default:
-		slog.Error(op, "err", err)
+		slog.ErrorContext(ctx, op, "err", err)
 		writeError(w, http.StatusInternalServerError, "Internal error", "")
 	}
 }

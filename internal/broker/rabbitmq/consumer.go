@@ -9,8 +9,13 @@ import (
 	"time"
 
 	amqp "github.com/rabbitmq/amqp091-go"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 
 	"gophprofile/internal/events"
+	"gophprofile/internal/logging"
 )
 
 const (
@@ -33,6 +38,8 @@ type Consumer struct {
 	maxRetryAttempts    int
 	initialRetryBackoff time.Duration
 	reconnectBackoff    time.Duration
+
+	tracer trace.Tracer
 }
 
 type ConsumerOption func(*Consumer)
@@ -65,6 +72,7 @@ func NewConsumer(url, exchange, queue, routingKey string, opts ...ConsumerOption
 		maxRetryAttempts:    defaultMaxRetryAttempts,
 		initialRetryBackoff: defaultInitialRetryBackoff,
 		reconnectBackoff:    defaultReconnectBackoff,
+		tracer:              otel.Tracer(tracerName),
 	}
 	for _, opt := range opts {
 		opt(c)
@@ -153,12 +161,12 @@ func (c *Consumer) Run(ctx context.Context, handler AvatarUploadedHandler) error
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		slog.Warn("rabbitmq consumer disconnected, reconnecting",
+		slog.WarnContext(ctx, "rabbitmq consumer disconnected, reconnecting",
 			"err", err, "backoff", c.reconnectBackoff)
 		if reconnectErr := c.reconnectWithBackoff(ctx); reconnectErr != nil {
 			return reconnectErr
 		}
-		slog.Info("rabbitmq consumer reconnected")
+		slog.InfoContext(ctx, "rabbitmq consumer reconnected")
 	}
 }
 
@@ -190,7 +198,7 @@ func (c *Consumer) reconnectWithBackoff(ctx context.Context) error {
 		if err := c.connect(); err == nil {
 			return nil
 		} else {
-			slog.Warn("rabbitmq reconnect attempt failed",
+			slog.WarnContext(ctx, "rabbitmq reconnect attempt failed",
 				"err", err, "backoff", c.reconnectBackoff)
 		}
 		select {
@@ -202,24 +210,42 @@ func (c *Consumer) reconnectWithBackoff(ctx context.Context) error {
 }
 
 func (c *Consumer) handleDelivery(ctx context.Context, handler AvatarUploadedHandler, msg amqp.Delivery) {
+	// Restore the upstream trace from AMQP headers before opening our own span,
+	// so the consumer span links to the producer's span across services.
+	ctx = extractContext(ctx, msg.Headers)
+	ctx, span := c.tracer.Start(ctx, "rabbitmq.consume",
+		trace.WithSpanKind(trace.SpanKindConsumer),
+		trace.WithAttributes(
+			attribute.String("messaging.system", "rabbitmq"),
+			attribute.String("messaging.source", c.queue),
+			attribute.String("messaging.rabbitmq.routing_key", c.routingKey),
+			attribute.String("messaging.message_id", msg.MessageId),
+		),
+	)
+	defer span.End()
+
+	msgCtx := logging.WithMessageID(ctx, msg.MessageId)
+
 	var evt events.AvatarUploadedEvent
 	if err := json.Unmarshal(msg.Body, &evt); err != nil {
 		// Malformed payload is a poison message — retrying won't help.
-		slog.Error("decode delivery, dropping", "err", err, "message_id", msg.MessageId)
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "decode failed")
+		slog.ErrorContext(msgCtx, "decode delivery, dropping", "err", err)
 		_ = msg.Nack(false, false)
 		return
 	}
 
 	var lastErr error
 	for attempt := 1; attempt <= c.maxRetryAttempts; attempt++ {
-		if err := ctx.Err(); err != nil {
+		if err := msgCtx.Err(); err != nil {
 			_ = msg.Nack(false, true) // shutting down — let the broker redeliver later
 			return
 		}
 
-		if err := handler(ctx, evt); err == nil {
+		if err := handler(msgCtx, evt); err == nil {
 			if ackErr := msg.Ack(false); ackErr != nil {
-				slog.Error("ack delivery", "err", ackErr, "message_id", msg.MessageId)
+				slog.ErrorContext(msgCtx, "ack delivery", "err", ackErr)
 			}
 			return
 		} else {
@@ -230,19 +256,21 @@ func (c *Consumer) handleDelivery(ctx context.Context, handler AvatarUploadedHan
 			break
 		}
 		backoff := c.initialRetryBackoff * (1 << (attempt - 1))
-		slog.Warn("handler failed, retrying",
+		slog.WarnContext(msgCtx, "handler failed, retrying",
 			"err", lastErr, "attempt", attempt, "backoff", backoff,
-			"avatar_id", evt.AvatarID, "message_id", msg.MessageId)
+			"avatar_id", evt.AvatarID)
 		select {
-		case <-ctx.Done():
+		case <-msgCtx.Done():
 			_ = msg.Nack(false, true)
 			return
 		case <-time.After(backoff):
 		}
 	}
 
-	slog.Error("handler exhausted retries, dropping",
+	span.RecordError(lastErr)
+	span.SetStatus(codes.Error, "exhausted retries")
+	slog.ErrorContext(msgCtx, "handler exhausted retries, dropping",
 		"err", lastErr, "attempts", c.maxRetryAttempts,
-		"avatar_id", evt.AvatarID, "message_id", msg.MessageId)
+		"avatar_id", evt.AvatarID)
 	_ = msg.Nack(false, false)
 }

@@ -58,6 +58,7 @@ services:
     restart: unless-stopped
     environment:
       HTTP_PORT: "8080"
+      APP_VERSION: "dev"
       POSTGRES_DSN: "postgres://gophprofile:gophprofile@postgres:5432/gophprofile?sslmode=disable"
       S3_ENDPOINT: "minio:9000"
       S3_ACCESS_KEY: "minioadmin"
@@ -65,6 +66,8 @@ services:
       S3_BUCKET: "avatars"
       RABBIT_URL: "amqp://guest:guest@rabbitmq:5672/"
       RABBIT_EXCHANGE: "avatars.exchange"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "otel-collector:4317"
+      OTEL_EXPORTER_OTLP_INSECURE: "true"
     ports:
       - "8080:8080"
     depends_on:
@@ -74,6 +77,8 @@ services:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
+      otel-collector:
+        condition: service_started
 
   worker:
     build:
@@ -81,6 +86,7 @@ services:
       dockerfile: docker/worker.Dockerfile
     restart: unless-stopped
     environment:
+      APP_VERSION: "dev"
       POSTGRES_DSN: "postgres://gophprofile:gophprofile@postgres:5432/gophprofile?sslmode=disable"
       S3_ENDPOINT: "minio:9000"
       S3_ACCESS_KEY: "minioadmin"
@@ -88,6 +94,8 @@ services:
       S3_BUCKET: "avatars"
       RABBIT_URL: "amqp://guest:guest@rabbitmq:5672/"
       RABBIT_EXCHANGE: "avatars.exchange"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "otel-collector:4317"
+      OTEL_EXPORTER_OTLP_INSECURE: "true"
     depends_on:
       postgres:
         condition: service_healthy
@@ -95,8 +103,110 @@ services:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
+      otel-collector:
+        condition: service_started
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.62.0
+    restart: unless-stopped
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "16686:16686"
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.108.0
+    restart: unless-stopped
+    command: ["--config=/etc/otel-collector/config.yaml"]
+    volumes:
+      - ./observability/otel-collector/config.yaml:/etc/otel-collector/config.yaml:ro
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+      - "8889:8889"
+    depends_on:
+      - jaeger
+
+  prometheus:
+    image: prom/prometheus:v2.55.0
+    restart: unless-stopped
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+    volumes:
+      - ./observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./observability/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "9090:9090"
+    depends_on:
+      - alertmanager
+
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    restart: unless-stopped
+    command:
+      - "--config.file=/etc/alertmanager/config.yml"
+      - "--storage.path=/alertmanager"
+    volumes:
+      - ./observability/alertmanager/config.yml:/etc/alertmanager/config.yml:ro
+      - alertmanager_data:/alertmanager
+    ports:
+      - "9093:9093"
+    depends_on:
+      - httpbin
+
+  httpbin:
+    # Demo sink for the alertmanager webhook receiver. Inspect deliveries via
+    # `docker compose logs -f httpbin` — POSTs to /anything are echoed back.
+    image: kennethreitz/httpbin:latest
+    restart: unless-stopped
+    ports:
+      - "8088:80"
+
+  loki:
+    image: grafana/loki:2.9.10
+    restart: unless-stopped
+    command: -config.file=/etc/loki/local-config.yaml
+    volumes:
+      - ./observability/loki/loki-config.yaml:/etc/loki/local-config.yaml:ro
+      - loki_data:/loki
+    ports:
+      - "3100:3100"
+
+  promtail:
+    image: grafana/promtail:2.9.10
+    restart: unless-stopped
+    command: -config.file=/etc/promtail/promtail-config.yaml
+    volumes:
+      - ./observability/promtail/promtail-config.yaml:/etc/promtail/promtail-config.yaml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    depends_on:
+      - loki
+
+  grafana:
+    image: grafana/grafana:11.3.0
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafana_data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+      - loki
+      - jaeger
 
 volumes:
   postgres_data:
   minio_data:
   rabbit_data:
+  prometheus_data:
+  loki_data:
+  grafana_data:
+  alertmanager_data:

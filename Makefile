@@ -26,6 +26,10 @@ up: ## Start the full stack (postgres, minio, rabbit, server, worker)
 up-infra: ## Start only the infrastructure (postgres, minio, rabbit)
 	$(COMPOSE) up -d postgres minio rabbitmq
 
+.PHONY: up-obs
+up-obs: ## Start only the observability stack (prometheus, jaeger, otel, loki, promtail, grafana)
+	$(COMPOSE) up -d prometheus jaeger otel-collector loki promtail grafana
+
 .PHONY: down
 down: ## Stop and remove containers (volumes kept)
 	$(COMPOSE) down
@@ -135,6 +139,15 @@ rabbit-ui: ## Print the RabbitMQ management URL and credentials
 .PHONY: rabbit-queues
 rabbit-queues: ## List rabbitmq queues with message counts
 	docker exec $(RABBIT) rabbitmqctl list_queues name messages consumers
+
+# ---------- observability ----------
+
+.PHONY: obs-ui
+obs-ui: ## Print observability UI URLs
+	@echo "Grafana:     http://localhost:3000  (admin/admin, anonymous viewer enabled)"
+	@echo "Prometheus:  http://localhost:9090"
+	@echo "Jaeger:      http://localhost:16686"
+	@echo "Loki API:    http://localhost:3100"
 
 # ---------- go ----------
 

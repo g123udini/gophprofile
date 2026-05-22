@@ -12,6 +12,7 @@ type Config struct {
 	Postgres PostgresConfig
 	S3       S3Config
 	Rabbit   RabbitConfig
+	OTel     OTelConfig
 }
 
 type HTTPConfig struct {
@@ -38,6 +39,13 @@ type RabbitConfig struct {
 	Exchange string
 }
 
+// OTelConfig configures the OTLP trace exporter. Empty Endpoint disables
+// tracing — Init returns a no-op shutdown.
+type OTelConfig struct {
+	Endpoint string
+	Insecure bool
+}
+
 func Load() (*Config, error) {
 	cfg := &Config{
 		HTTP: HTTPConfig{
@@ -59,6 +67,10 @@ func Load() (*Config, error) {
 		Rabbit: RabbitConfig{
 			URL:      getEnv("RABBIT_URL", "amqp://guest:guest@localhost:5672/"),
 			Exchange: getEnv("RABBIT_EXCHANGE", "avatars.exchange"),
+		},
+		OTel: OTelConfig{
+			Endpoint: getEnv("OTEL_EXPORTER_OTLP_ENDPOINT", ""),
+			Insecure: getEnvBool("OTEL_EXPORTER_OTLP_INSECURE", true),
 		},
 	}
 	return cfg, nil
