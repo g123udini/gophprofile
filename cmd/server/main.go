@@ -98,8 +98,10 @@ func run(logger *slog.Logger) error {
 	defer publisher.Close()
 	logger.Info("rabbitmq publisher ready", "exchange", cfg.Rabbit.Exchange)
 
+	s3CB := s3.NewCBClient(s3Client, 5, 30*time.Second)
+
 	avatarRepo := postgres.NewAvatarRepository(pool)
-	avatarSvc := service.NewAvatarService(avatarRepo, s3Client, publisher)
+	avatarSvc := service.NewAvatarService(avatarRepo, s3CB, publisher)
 	avatarHandler := handlers.NewAvatarHandler(avatarSvc)
 
 	r := chi.NewRouter()
@@ -121,6 +123,7 @@ func run(logger *slog.Logger) error {
 	r.Get("/health", healthHandler.Liveness)
 	r.Get("/health/ready", healthHandler.Readiness)
 	r.Route("/api/v1", func(r chi.Router) {
+		r.Use(apimw.RateLimiter(100, 50, 5*time.Minute))
 		r.Post("/avatars", avatarHandler.Upload)
 		r.Get("/avatars/{id}", avatarHandler.GetByID)
 		r.Get("/avatars/{id}/metadata", avatarHandler.GetMetadata)
