@@ -33,6 +33,11 @@ spec:
             name: avatar-service-config
         - secretRef:
             name: avatar-service-secrets
+        securityContext:
+          readOnlyRootFilesystem: true
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop: ["ALL"]
         resources:
           requests:
             cpu: "100m"
