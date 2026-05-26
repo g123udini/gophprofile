@@ -132,6 +132,28 @@ Internet ──► Ingress ──►│  avatar-service (Deployment, HPA 2-10)  
 
 Подробная схема: [`docs/architecture.md`](docs/architecture.md)
 
+## Мониторинг и алерты
+
+### Дашборды Grafana
+
+| Дашборд | Описание |
+|---|---|
+| Service Overview | RED-метрики (requests/errors/duration), uptime |
+| Business KPI | uploads/min, processing status, размер файлов, storage usage |
+
+### Alertmanager
+
+Правила алертов: [`observability/prometheus/alerts.yml`](observability/prometheus/alerts.yml)
+
+| Алерт | Условие | Severity |
+|---|---|---|
+| `ServiceDown` | Prometheus не может скрейпить таргет > 1 мин | critical |
+| `HighErrorRate` | 5xx > 5% за 5 мин | warning |
+| `HighLatency` | p95 > 1s за 5 мин | warning |
+| `WorkerQueueBacklog` | worker не обрабатывает сообщения > 10 мин | warning |
+
+Alertmanager конфиг: [`observability/alertmanager/config.yml`](observability/alertmanager/config.yml)
+
 ## Разработка
 
 ```bash

@@ -1,0 +1,333 @@
+openapi: "3.0.3"
+info:
+  title: GophProfile API
+  description: Микросервис для хранения и раздачи аватарок пользователей
+  version: "1.0.0"
+
+servers:
+  - url: http://localhost:8080
+    description: Local
+
+paths:
+  /api/v1/avatars:
+    post:
+      summary: Загрузить аватарку
+      operationId: uploadAvatar
+      tags: [avatars]
+      parameters:
+        - name: X-User-ID
+          in: header
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                image:
+                  type: string
+                  format: binary
+                file:
+                  type: string
+                  format: binary
+      responses:
+        "201":
+          description: Аватарка принята в обработку
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Avatar"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "413":
+          description: Файл превышает 10 MB
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+
+  /api/v1/avatars/{avatar_id}:
+    get:
+      summary: Получить аватарку
+      operationId: getAvatar
+      tags: [avatars]
+      parameters:
+        - $ref: "#/components/parameters/AvatarID"
+        - name: size
+          in: query
+          schema:
+            type: string
+            enum: [original, 100x100, 300x300]
+            default: original
+      responses:
+        "200":
+          description: Бинарный файл изображения
+          headers:
+            Content-Type:
+              schema:
+                type: string
+                example: image/jpeg
+            Cache-Control:
+              schema:
+                type: string
+                example: max-age=86400
+          content:
+            image/jpeg:
+              schema:
+                type: string
+                format: binary
+            image/png:
+              schema:
+                type: string
+                format: binary
+            image/webp:
+              schema:
+                type: string
+                format: binary
+        "404":
+          $ref: "#/components/responses/NotFound"
+    delete:
+      summary: Удалить аватарку
+      operationId: deleteAvatar
+      tags: [avatars]
+      parameters:
+        - $ref: "#/components/parameters/AvatarID"
+        - name: X-User-ID
+          in: header
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Удалено
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/avatars/{avatar_id}/metadata:
+    get:
+      summary: Метаданные аватарки
+      operationId: getAvatarMetadata
+      tags: [avatars]
+      parameters:
+        - $ref: "#/components/parameters/AvatarID"
+      responses:
+        "200":
+          description: Метаданные
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AvatarMetadata"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/users/{user_id}/avatar:
+    get:
+      summary: Последняя аватарка пользователя
+      operationId: getUserAvatar
+      tags: [users]
+      parameters:
+        - $ref: "#/components/parameters/UserID"
+        - name: size
+          in: query
+          schema:
+            type: string
+            enum: [original, 100x100, 300x300]
+      responses:
+        "200":
+          description: Бинарный файл изображения
+          content:
+            image/jpeg:
+              schema:
+                type: string
+                format: binary
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/users/{user_id}/avatars:
+    get:
+      summary: Список аватарок пользователя
+      operationId: listUserAvatars
+      tags: [users]
+      parameters:
+        - $ref: "#/components/parameters/UserID"
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+            minimum: 1
+            maximum: 100
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+            minimum: 0
+      responses:
+        "200":
+          description: Список аватарок
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/AvatarMetadata"
+
+  /health:
+    get:
+      summary: Liveness probe
+      operationId: liveness
+      tags: [ops]
+      responses:
+        "200":
+          description: Сервис жив
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: alive
+
+  /health/ready:
+    get:
+      summary: Readiness probe
+      operationId: readiness
+      tags: [ops]
+      responses:
+        "200":
+          description: Сервис готов принимать трафик
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthStatus"
+        "503":
+          description: Одна или несколько зависимостей недоступны
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthStatus"
+
+components:
+  parameters:
+    AvatarID:
+      name: avatar_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    UserID:
+      name: user_id
+      in: path
+      required: true
+      schema:
+        type: string
+
+  schemas:
+    Avatar:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        user_id:
+          type: string
+        url:
+          type: string
+        status:
+          type: string
+          enum: [processing, done, failed]
+        created_at:
+          type: string
+          format: date-time
+
+    AvatarMetadata:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        user_id:
+          type: string
+        file_name:
+          type: string
+        mime_type:
+          type: string
+        size_bytes:
+          type: integer
+        s3_key:
+          type: string
+        thumbnail_s3_keys:
+          type: object
+          additionalProperties:
+            type: string
+        upload_status:
+          type: string
+        processing_status:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    HealthStatus:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [ok, degraded]
+        components:
+          type: object
+          properties:
+            postgres:
+              type: string
+              enum: [ok, down]
+            s3:
+              type: string
+              enum: [ok, down]
+            rabbit:
+              type: string
+              enum: [ok, down]
+
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+
+  responses:
+    BadRequest:
+      description: Неверный запрос
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    NotFound:
+      description: Не найдено
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Forbidden:
+      description: Нет прав
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    TooManyRequests:
+      description: Слишком много запросов
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
