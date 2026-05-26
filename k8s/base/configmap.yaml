@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: avatar-service-config
+  labels:
+    app: avatar-service
+data:
+  APP_PORT: "8080"
+  METRICS_PORT: "9090"
+  LOG_LEVEL: "info"
+  DB_HOST: "postgres"
+  DB_PORT: "5432"
+  DB_NAME: "gophprofile"
+  MINIO_ENDPOINT: "minio:9000"
+  RABBITMQ_HOST: "rabbitmq"
+  RABBITMQ_PORT: "5672"
