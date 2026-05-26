@@ -52,7 +52,7 @@ func Load() (*Config, error) {
 			Port:            getEnv("HTTP_PORT", "8080"),
 			ReadTimeout:     getEnvDuration("HTTP_READ_TIMEOUT", 10*time.Second),
 			WriteTimeout:    getEnvDuration("HTTP_WRITE_TIMEOUT", 30*time.Second),
-			ShutdownTimeout: getEnvDuration("HTTP_SHUTDOWN_TIMEOUT", 15*time.Second),
+			ShutdownTimeout: getEnvDuration("HTTP_SHUTDOWN_TIMEOUT", 30*time.Second),
 		},
 		Postgres: PostgresConfig{
 			DSN: getEnv("POSTGRES_DSN", "postgres://gophprofile:gophprofile@localhost:5432/gophprofile?sslmode=disable"),
