@@ -119,7 +119,8 @@ func run(logger *slog.Logger) error {
 	r.Use(middleware.Timeout(30 * time.Second))
 
 	r.Handle("/metrics", metrics.Handler())
-	r.Get("/health", healthHandler(pool, s3Client, publisher))
+	r.Get("/health", livenessHandler())
+	r.Get("/health/ready", readinessHandler(pool, s3Client, publisher))
 	r.Route("/api/v1", func(r chi.Router) {
 		r.Post("/avatars", avatarHandler.Upload)
 		r.Get("/avatars/{id}", avatarHandler.GetByID)
@@ -180,7 +181,8 @@ func otelHTTPMiddleware(service string) func(http.Handler) http.Handler {
 		return otelhttp.NewHandler(next, service,
 			otelhttp.WithFilter(func(r *http.Request) bool {
 				return !strings.HasPrefix(r.URL.Path, "/metrics") &&
-					!strings.HasPrefix(r.URL.Path, "/health")
+					!strings.HasPrefix(r.URL.Path, "/health") &&
+					!strings.HasPrefix(r.URL.Path, "/health/ready")
 			}),
 		)
 	}
@@ -212,7 +214,14 @@ func otelRequestIDAttr(next http.Handler) http.Handler {
 	})
 }
 
-func healthHandler(pool *pgxpool.Pool, s3Client *s3.Client, publisher *rabbitmq.Publisher) http.HandlerFunc {
+func livenessHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "alive"})
+	}
+}
+
+func readinessHandler(pool *pgxpool.Pool, s3Client *s3.Client, publisher *rabbitmq.Publisher) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 		defer cancel()
