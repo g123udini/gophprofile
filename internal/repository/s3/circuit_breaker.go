@@ -21,11 +21,11 @@ type objectStore interface {
 // When S3 is unavailable, the breaker opens after maxFailures consecutive
 // errors and rejects calls immediately until the cooldown passes.
 type CBClient struct {
-	inner   objectStore
-	putCB   *gobreaker.CircuitBreaker[struct{}]
-	getCB   *gobreaker.CircuitBreaker[getResult]
-	delCB   *gobreaker.CircuitBreaker[struct{}]
-	pingCB  *gobreaker.CircuitBreaker[struct{}]
+	inner  objectStore
+	putCB  *gobreaker.CircuitBreaker[struct{}]
+	getCB  *gobreaker.CircuitBreaker[getResult]
+	delCB  *gobreaker.CircuitBreaker[struct{}]
+	pingCB *gobreaker.CircuitBreaker[struct{}]
 }
 
 type getResult struct {
