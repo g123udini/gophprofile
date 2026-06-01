@@ -2,6 +2,7 @@ replicaCount: 2
 
 image:
   repository: avatar-service
+  # Replace with a specific SHA or semver tag before deploying (e.g. v1.2.3 or sha-abc1234)
   tag: latest
   pullPolicy: IfNotPresent
 

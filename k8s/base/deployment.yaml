@@ -21,6 +21,7 @@ spec:
       terminationGracePeriodSeconds: 40
       containers:
       - name: server
+        # Replace latest with a specific SHA or semver tag before deploying (e.g. avatar-service:sha-abc1234)
         image: avatar-service:latest
         imagePullPolicy: IfNotPresent
         ports:
