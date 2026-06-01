@@ -16,7 +16,7 @@ spec:
       - name: migrate
         image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
         imagePullPolicy: {{ .Values.image.pullPolicy }}
-        command: ["/migrate", "-path", "/migrations", "-database", "$(DATABASE_URL)", "up"]
+        command: ["/migrate", "-path", "/migrations", "-database", "$(POSTGRES_DSN)", "up"]
         envFrom:
         - configMapRef:
             name: {{ include "avatar-service.fullname" . }}-config

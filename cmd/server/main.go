@@ -28,7 +28,6 @@ import (
 	"gophprofile/internal/repository/postgres"
 	"gophprofile/internal/repository/s3"
 	"gophprofile/internal/service"
-	"gophprofile/migrations"
 )
 
 func main() {
@@ -61,11 +60,6 @@ func run(logger *slog.Logger) error {
 			logger.Error("tracing shutdown failed", "err", err)
 		}
 	}()
-
-	if err := postgres.Migrate(cfg.Postgres.DSN, migrations.FS); err != nil {
-		return fmt.Errorf("apply migrations: %w", err)
-	}
-	logger.Info("migrations applied")
 
 	poolCtx, poolCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	pool, err := postgres.NewPool(poolCtx, cfg.Postgres.DSN)
