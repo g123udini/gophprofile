@@ -5,12 +5,9 @@ metadata:
   labels:
     app: avatar-service
 data:
-  APP_PORT: "8080"
+  HTTP_PORT: "8080"
   METRICS_PORT: "9090"
   LOG_LEVEL: "info"
-  DB_HOST: "postgres"
-  DB_PORT: "5432"
-  DB_NAME: "gophprofile"
-  MINIO_ENDPOINT: "minio:9000"
-  RABBITMQ_HOST: "rabbitmq"
-  RABBITMQ_PORT: "5672"
+  S3_ENDPOINT: "minio:9000"
+  S3_BUCKET: "avatars"
+  RABBIT_EXCHANGE: "avatars.exchange"

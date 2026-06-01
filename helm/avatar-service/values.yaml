@@ -39,19 +39,14 @@ serviceMonitor:
 
 config:
   logLevel: info
-  appPort: "8080"
+  httpPort: "8080"
   metricsPort: "9090"
-  dbHost: postgres
-  dbPort: "5432"
-  dbName: gophprofile
-  minioEndpoint: minio:9000
-  rabbitmqHost: rabbitmq
-  rabbitmqPort: "5672"
+  s3Endpoint: minio:9000
+  s3Bucket: avatars
+  rabbitExchange: avatars.exchange
 
 secrets:
-  dbUser: gophprofile
-  dbPassword: changeme
-  minioAccessKey: minioadmin
-  minioSecretKey: minioadmin
-  rabbitmqUser: guest
-  rabbitmqPassword: guest
+  postgresDSN: "postgres://gophprofile:changeme@postgres:5432/gophprofile?sslmode=disable"
+  s3AccessKey: minioadmin
+  s3SecretKey: minioadmin
+  rabbitURL: "amqp://guest:guest@rabbitmq:5672/"
