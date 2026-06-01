@@ -1,6 +1,8 @@
 .DEFAULT_GOAL := help
 
 COMPOSE    ?= docker compose
+# Ryuk (Testcontainers cleanup container) fails to start with some Docker Desktop configs
+TESTCONTAINERS_RYUK_DISABLED ?= true
 SERVER     := gophprofile-server-1
 WORKER     := gophprofile-worker-1
 POSTGRES   := gophprofile-postgres-1
@@ -157,19 +159,19 @@ build: ## go build ./...
 
 .PHONY: test
 test: ## Run the full test suite
-	go test ./...
+	TESTCONTAINERS_RYUK_DISABLED=$(TESTCONTAINERS_RYUK_DISABLED) go test ./...
 
 .PHONY: test-v
 test-v: ## Run tests with verbose output
-	go test -v ./...
+	TESTCONTAINERS_RYUK_DISABLED=$(TESTCONTAINERS_RYUK_DISABLED) go test -v ./...
 
 .PHONY: test-cover
 test-cover: ## Run tests with coverage report per package
-	go test -cover ./...
+	TESTCONTAINERS_RYUK_DISABLED=$(TESTCONTAINERS_RYUK_DISABLED) go test -cover ./...
 
 .PHONY: test-cover-html
 test-cover-html: ## Generate an HTML coverage report and open it
-	go test -coverprofile=coverage.out ./...
+	TESTCONTAINERS_RYUK_DISABLED=$(TESTCONTAINERS_RYUK_DISABLED) go test -coverprofile=coverage.out ./...
 	go tool cover -html=coverage.out
 
 .PHONY: fmt
