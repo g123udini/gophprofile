@@ -74,15 +74,51 @@ echo "127.0.0.1 gophprofile.local" | sudo tee -a /etc/hosts
 kubectl config current-context
 ```
 
+### Секреты
+
+`values.yaml` и `k8s/base/secret.yaml` содержат плейсхолдеры `PLACEHOLDER` вместо реальных паролей — **не заменяй их в репозитории**.
+
+Передать настоящие значения можно тремя способами:
+
+**1. `--set` при установке Helm:**
+```bash
+helm install avatar-service ./helm/avatar-service \
+  --set secrets.postgresDSN="postgres://gophprofile:MYPASSWORD@postgres:5432/gophprofile?sslmode=disable" \
+  --set secrets.s3AccessKey=MYKEY \
+  --set secrets.s3SecretKey=MYSECRET \
+  --set secrets.rabbitURL="amqp://myuser:MYPASSWORD@rabbitmq:5672/"
+```
+
+**2. Отдельный `values-secrets.yaml` (не коммитить, добавить в `.gitignore`):**
+```bash
+helm install avatar-service ./helm/avatar-service \
+  -f helm/avatar-service/values-dev.yaml \
+  -f values-secrets.yaml   # только локально, вне репозитория
+```
+
+**3. Внешний secrets-менеджер** (рекомендуется для прода):
+- [External Secrets Operator](https://external-secrets.io) + AWS Secrets Manager / GCP Secret Manager / HashiCorp Vault
+- [Sealed Secrets](https://sealed-secrets.netlify.app) — шифрование прямо в GitOps
+
+Для raw-манифестов (`k8s/base/`) отредактируй `secret.yaml` локально перед `kubectl apply`, но не коммить изменённый файл.
+
 ### Установка через Helm
 
 ```bash
 # dev-окружение (1 реплика, HPA/NetworkPolicy выключены)
 helm install avatar-service ./helm/avatar-service \
-  -f helm/avatar-service/values-dev.yaml
+  -f helm/avatar-service/values-dev.yaml \
+  --set secrets.postgresDSN="postgres://gophprofile:MYPASSWORD@postgres:5432/gophprofile?sslmode=disable" \
+  --set secrets.s3AccessKey=MYKEY \
+  --set secrets.s3SecretKey=MYSECRET \
+  --set secrets.rabbitURL="amqp://myuser:MYPASSWORD@rabbitmq:5672/"
 
 # prod-окружение
-helm install avatar-service ./helm/avatar-service
+helm install avatar-service ./helm/avatar-service \
+  --set secrets.postgresDSN="..." \
+  --set secrets.s3AccessKey=... \
+  --set secrets.s3SecretKey=... \
+  --set secrets.rabbitURL="..."
 
 # обновление
 helm upgrade avatar-service ./helm/avatar-service \
@@ -168,8 +204,11 @@ golangci-lint run
 |---|---|---|
 | `HTTP_PORT` | `8080` | порт API |
 | `HTTP_SHUTDOWN_TIMEOUT` | `30s` | таймаут graceful shutdown |
-| `POSTGRES_DSN` | см. config | строка подключения к БД |
-| `MINIO_ENDPOINT` | `localhost:9000` | адрес MinIO |
-| `RABBITMQ_DSN` | `amqp://guest:guest@localhost:5672/` | адрес RabbitMQ |
-| `LOG_LEVEL` | `info` | уровень логирования |
-| `OTEL_ENDPOINT` | `localhost:4317` | адрес OTel Collector |
+| `POSTGRES_DSN` | — | строка подключения к PostgreSQL |
+| `S3_ENDPOINT` | `localhost:9000` | адрес MinIO/S3 |
+| `S3_ACCESS_KEY` | — | access key S3 |
+| `S3_SECRET_KEY` | — | secret key S3 |
+| `S3_BUCKET` | `avatars` | имя бакета |
+| `RABBIT_URL` | — | AMQP URL RabbitMQ |
+| `RABBIT_EXCHANGE` | `avatars.exchange` | имя exchange |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | — | адрес OTel Collector (пусто = трейсинг отключён) |
