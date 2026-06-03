@@ -1,0 +1,18 @@
+replicaCount: 1
+
+hpa:
+  enabled: false
+
+networkPolicy:
+  enabled: false
+
+ingress:
+  host: gophprofile.local
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 200m
+    memory: 256Mi

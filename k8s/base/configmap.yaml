@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: avatar-service-config
+  labels:
+    app: avatar-service
+data:
+  HTTP_PORT: "8080"
+  METRICS_PORT: "9090"
+  LOG_LEVEL: "info"
+  S3_ENDPOINT: "minio:9000"
+  S3_BUCKET: "avatars"
+  RABBIT_EXCHANGE: "avatars.exchange"

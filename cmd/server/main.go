@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -15,7 +14,6 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
@@ -30,7 +28,6 @@ import (
 	"gophprofile/internal/repository/postgres"
 	"gophprofile/internal/repository/s3"
 	"gophprofile/internal/service"
-	"gophprofile/migrations"
 )
 
 func main() {
@@ -64,11 +61,6 @@ func run(logger *slog.Logger) error {
 		}
 	}()
 
-	if err := postgres.Migrate(cfg.Postgres.DSN, migrations.FS); err != nil {
-		return fmt.Errorf("apply migrations: %w", err)
-	}
-	logger.Info("migrations applied")
-
 	poolCtx, poolCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	pool, err := postgres.NewPool(poolCtx, cfg.Postgres.DSN)
 	poolCancel()
@@ -100,8 +92,10 @@ func run(logger *slog.Logger) error {
 	defer publisher.Close()
 	logger.Info("rabbitmq publisher ready", "exchange", cfg.Rabbit.Exchange)
 
+	s3CB := s3.NewCBClient(s3Client, 5, 30*time.Second)
+
 	avatarRepo := postgres.NewAvatarRepository(pool)
-	avatarSvc := service.NewAvatarService(avatarRepo, s3Client, publisher)
+	avatarSvc := service.NewAvatarService(avatarRepo, s3CB, publisher)
 	avatarHandler := handlers.NewAvatarHandler(avatarSvc)
 
 	r := chi.NewRouter()
@@ -118,9 +112,12 @@ func run(logger *slog.Logger) error {
 	r.Use(apimw.Metrics)
 	r.Use(middleware.Timeout(30 * time.Second))
 
+	healthHandler := handlers.NewHealthHandler(pool, s3Client, publisher)
 	r.Handle("/metrics", metrics.Handler())
-	r.Get("/health", healthHandler(pool, s3Client, publisher))
+	r.Get("/health", healthHandler.Liveness)
+	r.Get("/health/ready", healthHandler.Readiness)
 	r.Route("/api/v1", func(r chi.Router) {
+		r.Use(apimw.RateLimiter(100, 50, 5*time.Minute))
 		r.Post("/avatars", avatarHandler.Upload)
 		r.Get("/avatars/{id}", avatarHandler.GetByID)
 		r.Get("/avatars/{id}/metadata", avatarHandler.GetMetadata)
@@ -180,7 +177,8 @@ func otelHTTPMiddleware(service string) func(http.Handler) http.Handler {
 		return otelhttp.NewHandler(next, service,
 			otelhttp.WithFilter(func(r *http.Request) bool {
 				return !strings.HasPrefix(r.URL.Path, "/metrics") &&
-					!strings.HasPrefix(r.URL.Path, "/health")
+					!strings.HasPrefix(r.URL.Path, "/health") &&
+					!strings.HasPrefix(r.URL.Path, "/health/ready")
 			}),
 		)
 	}
@@ -210,44 +208,4 @@ func otelRequestIDAttr(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
-}
-
-func healthHandler(pool *pgxpool.Pool, s3Client *s3.Client, publisher *rabbitmq.Publisher) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
-		defer cancel()
-
-		pgStatus := "ok"
-		if err := pool.Ping(ctx); err != nil {
-			pgStatus = "down"
-		}
-
-		s3Status := "ok"
-		if err := s3Client.Ping(ctx); err != nil {
-			s3Status = "down"
-		}
-
-		rabbitStatus := "ok"
-		if !publisher.Healthy() {
-			rabbitStatus = "down"
-		}
-
-		overall := "ok"
-		statusCode := http.StatusOK
-		if pgStatus != "ok" || s3Status != "ok" || rabbitStatus != "ok" {
-			overall = "degraded"
-			statusCode = http.StatusServiceUnavailable
-		}
-
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(statusCode)
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"status": overall,
-			"components": map[string]string{
-				"postgres": pgStatus,
-				"s3":       s3Status,
-				"rabbit":   rabbitStatus,
-			},
-		})
-	}
 }
